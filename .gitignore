@@ -1,0 +1,23 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+.idea/
+.DS_Store
+*build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+
+# Signing keys
+debug.keystore
+debug.keystore.base64
+keystore.properties
+*.jks
+*.p12
+
+# Built artifacts
+*.apk
+*.aab
