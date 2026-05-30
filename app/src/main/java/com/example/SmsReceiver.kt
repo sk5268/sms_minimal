@@ -51,11 +51,54 @@ class SmsReceiver : BroadcastReceiver() {
         // 2. Intelligent OTP extraction
         val otp = extractOTP(body)
 
+        val messageId = insertedUri?.let { uri ->
+            try {
+                android.content.ContentUris.parseId(uri)
+            } catch (e: Exception) {
+                uri.lastPathSegment?.toLongOrNull()
+            }
+        }
+
+        if (messageId != null && otp != null) {
+            scheduleOtpAutoDelete(context, messageId)
+        }
+
         // 3. Query contact display name or fallback to number
         val displayName = getContactName(context, sender) ?: sender
 
         // 4. Trigger system notification with action buttons
         showSmsNotification(context, sender, displayName, body, otp, smsUriString)
+    }
+
+    private fun scheduleOtpAutoDelete(context: Context, messageId: Long) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
+        val intent = Intent(context, OtpDeleteReceiver::class.java).apply {
+            putExtra("message_id", messageId)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            messageId.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + 30 * 60 * 1000L
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.set(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerTime,
+                    pendingIntent
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun extractOTP(body: String): String? {

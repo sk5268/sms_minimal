@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.app.Activity
+import android.app.PendingIntent
 import android.app.role.RoleManager
 import android.content.ContentValues
 import android.content.Context
@@ -28,6 +29,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -62,12 +64,16 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -179,6 +185,7 @@ class ArchiveManager(context: Context) {
 // Ultra-light SharedPreferences Delete Manager for Soft Deletion (6 hours)
 class DeleteManager(context: Context) {
     private val prefs = context.getSharedPreferences("sms_delete_prefs", Context.MODE_PRIVATE)
+    private val msgPrefs = context.getSharedPreferences("sms_delete_msg_prefs", Context.MODE_PRIVATE)
 
     fun getDeletedThreads(): Map<Long, Long> {
         return prefs.all.mapNotNull { (key, value) ->
@@ -194,6 +201,32 @@ class DeleteManager(context: Context) {
 
     fun restoreThread(threadId: Long) {
         prefs.edit().remove(threadId.toString()).apply()
+    }
+
+    fun getDeletedMessages(): Map<Long, Long> {
+        return msgPrefs.all.mapNotNull { (key, value) ->
+            val messageId = key.toLongOrNull()
+            val timestamp = value as? Long
+            if (messageId != null && timestamp != null) messageId to timestamp else null
+        }.toMap()
+    }
+
+    fun softDeleteMessage(messageId: Long) {
+        msgPrefs.edit().putLong(messageId.toString(), System.currentTimeMillis()).apply()
+    }
+
+    fun restoreMessage(messageId: Long) {
+        msgPrefs.edit().remove(messageId.toString()).apply()
+    }
+
+    fun registerChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        msgPrefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        msgPrefs.unregisterOnSharedPreferenceChangeListener(listener)
     }
     
     fun cleanUpExpired(context: Context) {
@@ -216,6 +249,51 @@ class DeleteManager(context: Context) {
             }
             editor.apply()
         }
+
+        val expiredMsgs = getDeletedMessages().filter { (now - it.value) > 6 * 60 * 60 * 1000L }
+        if (expiredMsgs.isNotEmpty()) {
+            val editor = msgPrefs.edit()
+            for ((id, _) in expiredMsgs) {
+                try {
+                    context.contentResolver.delete(
+                        Uri.parse("content://sms/$id"),
+                        null,
+                        null
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                editor.remove(id.toString())
+            }
+            editor.apply()
+        }
+    }
+}
+
+// Ultra-light SharedPreferences Star Manager
+class StarManager(context: Context) {
+    private val prefs = context.getSharedPreferences("sms_star_prefs", Context.MODE_PRIVATE)
+
+    fun getStarredMessageIds(): Set<Long> {
+        return prefs.all.keys.mapNotNull { it.toLongOrNull() }.toSet()
+    }
+
+    fun toggleStar(messageId: Long) {
+        val editor = prefs.edit()
+        if (prefs.contains(messageId.toString())) {
+            editor.remove(messageId.toString())
+        } else {
+            editor.putLong(messageId.toString(), System.currentTimeMillis())
+        }
+        editor.apply()
+    }
+
+    fun registerChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
     }
 }
 
@@ -290,11 +368,35 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     val context = LocalContext.current
     val archiveManager = remember { ArchiveManager(context) }
     val deleteManager = remember { DeleteManager(context) }
+    val starManager = remember { StarManager(context) }
 
     // Dynamic state management
     var archivedIds by remember { mutableStateOf(archiveManager.getArchivedThreadIds()) }
     var unarchivedIds by remember { mutableStateOf(archiveManager.getUnarchivedThreadIds()) }
     var deletedIds by remember { mutableStateOf(deleteManager.getDeletedThreads().keys) }
+    var deletedMessageIds by remember { mutableStateOf(deleteManager.getDeletedMessages().keys) }
+    var starredIds by remember { mutableStateOf(starManager.getStarredMessageIds()) }
+
+    DisposableEffect(deleteManager) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            deletedIds = deleteManager.getDeletedThreads().keys
+            deletedMessageIds = deleteManager.getDeletedMessages().keys
+        }
+        deleteManager.registerChangeListener(listener)
+        onDispose {
+            deleteManager.unregisterChangeListener(listener)
+        }
+    }
+
+    DisposableEffect(starManager) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            starredIds = starManager.getStarredMessageIds()
+        }
+        starManager.registerChangeListener(listener)
+        onDispose {
+            starManager.unregisterChangeListener(listener)
+        }
+    }
     var permissionsGranted by remember { mutableStateOf(checkSmsPermissions(context)) }
     var isDefaultSms by remember { mutableStateOf(checkDefaultSms(context)) }
     var isBannerDismissed by remember { mutableStateOf(false) }
@@ -304,12 +406,14 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var isNewMessageOpen by remember { mutableStateOf(false) }
     var isDeletedFolderOpen by remember { mutableStateOf(false) }
     var selectedMessageIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var scrollToMessageId by remember { mutableStateOf<Long?>(null) }
 
     // Message Lists Thread safe updates
     var threads by remember { mutableStateOf<List<SmsThread>>(emptyList()) }
     var activeMessages by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
+    var starredMessages by remember { mutableStateOf<List<Pair<SmsMessage, String>>>(emptyList()) }
     var refreshCounter by remember { mutableIntStateOf(0) }
-    var activeTab by remember { mutableStateOf("INBOX") } // INBOX or ARCHIVE
+    var activeTab by remember { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or STARRED
 
     // Swipe to delete thread states
     // Removed legacy threadToDelete state (now handled via soft deletion)
@@ -319,11 +423,14 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var newMessageText by remember { mutableStateOf("") }
     var chatMessageText by remember { mutableStateOf("") }
 
-    BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen) {
-        if (activeThread != null) {
+    BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen || selectedMessageIds.isNotEmpty()) {
+        if (selectedMessageIds.isNotEmpty()) {
+            selectedMessageIds = emptySet()
+        } else if (activeThread != null) {
             activeThread = null
             chatMessageText = ""
             selectedMessageIds = emptySet()
+            scrollToMessageId = null
             refreshCounter++
         } else if (isNewMessageOpen) {
             isNewMessageOpen = false
@@ -401,6 +508,8 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 isDefaultSms = checkDefaultSms(context)
                 permissionsGranted = checkSmsPermissions(context)
+                deletedIds = deleteManager.getDeletedThreads().keys
+                deletedMessageIds = deleteManager.getDeletedMessages().keys
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -438,14 +547,31 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     }
 
     // 2. Active Thread Conversation List Querying Hook
-    LaunchedEffect(activeThread, refreshCounter) {
+    LaunchedEffect(activeThread, refreshCounter, deletedMessageIds) {
         val currentThread = activeThread
         if (currentThread != null && permissionsGranted) {
             withContext(Dispatchers.IO) {
-                val msgs = queryMessagesForThread(context, currentThread.threadId)
+                val msgs = queryMessagesForThread(context, currentThread.threadId, deletedMessageIds)
                 markThreadAsRead(context, currentThread.threadId)
                 withContext(Dispatchers.Main) {
                     activeMessages = msgs
+                }
+            }
+        }
+    }
+
+    // 3. Starred Messages Querying Hook
+    LaunchedEffect(permissionsGranted, starredIds, refreshCounter, deletedMessageIds) {
+        if (permissionsGranted) {
+            withContext(Dispatchers.IO) {
+                val validStarredIds = starredIds.filter { !deletedMessageIds.contains(it) }.toSet()
+                val msgs = queryMessagesByIds(context, validStarredIds)
+                val namedMsgs = msgs.map { msg ->
+                    val name = getContactName(context, msg.address) ?: msg.address
+                    msg to name
+                }
+                withContext(Dispatchers.Main) {
+                    starredMessages = namedMsgs
                 }
             }
         }
@@ -587,6 +713,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         activeThread = null
                         chatMessageText = ""
                         selectedMessageIds = emptySet()
+                        scrollToMessageId = null
                         refreshCounter++
                     },
                     onSendMessage = {
@@ -597,6 +724,8 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         }
                     },
                     selectedMessageIds = selectedMessageIds,
+                    starredIds = starredIds,
+                    scrollToMessageId = scrollToMessageId,
                     onToggleMessageSelection = { id ->
                         selectedMessageIds = if (selectedMessageIds.contains(id)) {
                             selectedMessageIds - id
@@ -611,6 +740,18 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         deleteSmsMessages(context, ids)
                         selectedMessageIds = emptySet()
                         refreshCounter++
+                    },
+                    onToggleStar = { id -> starManager.toggleStar(id) },
+                    onToggleStarMultiple = { ids ->
+                        val anyUnstarred = ids.any { !starredIds.contains(it) }
+                        ids.forEach { id ->
+                            if (anyUnstarred && !starredIds.contains(id)) {
+                                starManager.toggleStar(id)
+                            } else if (!anyUnstarred && starredIds.contains(id)) {
+                                starManager.toggleStar(id)
+                            }
+                        }
+                        selectedMessageIds = emptySet()
                     }
                 )
             } else if (isNewMessageOpen) {
@@ -639,6 +780,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                 // RECENTLY DELETED SCREEN
                 DeletedThreadsScreen(
                     deletedIds = deletedIds,
+                    deletedMsgIds = deletedMessageIds,
                     deleteManager = deleteManager,
                     onBack = {
                         isDeletedFolderOpen = false
@@ -646,6 +788,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                     },
                     onRefresh = {
                         deletedIds = deleteManager.getDeletedThreads().keys
+                        deletedMessageIds = deleteManager.getDeletedMessages().keys
                         refreshCounter++
                     }
                 )
@@ -653,9 +796,17 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                 // MAIN THREADS INBOX / ARCHIVAL SCREEN
                 MainThreadsScreen(
                     threads = threads,
+                    starredMessages = starredMessages,
                     activeTab = activeTab,
                     onTabChange = { activeTab = it },
                     onThreadSelect = { activeThread = it },
+                    onStarredMessageSelect = { threadId, messageId ->
+                        val thread = threads.find { it.threadId == threadId }
+                        if (thread != null) {
+                            scrollToMessageId = messageId
+                            activeThread = thread
+                        }
+                    },
                     onArchiveToggle = { thread ->
                         if (thread.isArchived) {
                             archiveManager.unarchiveThread(context, thread.threadId)
@@ -681,19 +832,29 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
 @Composable
 fun MainThreadsScreen(
     threads: List<SmsThread>,
+    starredMessages: List<Pair<SmsMessage, String>>,
     activeTab: String,
     onTabChange: (String) -> Unit,
     onThreadSelect: (SmsThread) -> Unit,
+    onStarredMessageSelect: (Long, Long) -> Unit,
     onArchiveToggle: (SmsThread) -> Unit,
     onThreadDelete: (SmsThread) -> Unit,
     onOpenDeletedFolder: () -> Unit,
     onComposeClick: () -> Unit
 ) {
-    val pagerState = rememberPagerState(initialPage = if (activeTab == "INBOX") 0 else 1) { 2 }
+    val pagerState = rememberPagerState(initialPage = when (activeTab) {
+        "INBOX" -> 0
+        "ARCHIVE" -> 1
+        else -> 2
+    }) { 3 }
 
     // Sync pager state changes (from swipe) to activeTab
     LaunchedEffect(pagerState.currentPage) {
-        val tab = if (pagerState.currentPage == 0) "INBOX" else "ARCHIVE"
+        val tab = when (pagerState.currentPage) {
+            0 -> "INBOX"
+            1 -> "ARCHIVE"
+            else -> "STARRED"
+        }
         if (tab != activeTab) {
             onTabChange(tab)
         }
@@ -701,7 +862,11 @@ fun MainThreadsScreen(
 
     // Sync activeTab changes (from button clicks) to pager state
     LaunchedEffect(activeTab) {
-        val targetPage = if (activeTab == "INBOX") 0 else 1
+        val targetPage = when (activeTab) {
+            "INBOX" -> 0
+            "ARCHIVE" -> 1
+            else -> 2
+        }
         if (pagerState.currentPage != targetPage) {
             pagerState.animateScrollToPage(
                 page = targetPage,
@@ -744,7 +909,7 @@ fun MainThreadsScreen(
                     val fraction = pagerState.currentPage + pagerState.currentPageOffsetFraction
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(0.5f)
+                            .fillMaxWidth(0.333f)
                             .height(38.dp)
                             .align(Alignment.CenterStart)
                             .graphicsLayer {
@@ -762,7 +927,7 @@ fun MainThreadsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf("INBOX", "ARCHIVE").forEach { tab ->
+                        listOf("INBOX", "ARCHIVE", "STARRED").forEach { tab ->
                             val selected = (tab == activeTab)
                             Box(
                                 modifier = Modifier
@@ -778,8 +943,13 @@ fun MainThreadsScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.Center
                                 ) {
+                                    val text = when (tab) {
+                                        "INBOX" -> Translator.get("inbox_tab")
+                                        "ARCHIVE" -> Translator.get("archive_tab")
+                                        else -> Translator.get("starred_tab")
+                                    }
                                     Text(
-                                        text = if (tab == "INBOX") Translator.get("inbox_tab") else Translator.get("archive_tab"),
+                                        text = text,
                                         fontSize = 10.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -851,13 +1021,59 @@ fun MainThreadsScreen(
                     .fillMaxWidth()
                     .weight(1f)
             ) { page ->
-                val listThreads = if (page == 0) {
-                    threads.filter { !it.isArchived }
+                if (page == 2) {
+                    if (starredMessages.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(32.dp)
+                            ) {
+                                Text(
+                                    text = Translator.get("no_starred_messages"),
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextSecondary,
+                                    letterSpacing = 1.5.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = Translator.get("no_starred_desc"),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = TextSecondary.copy(alpha = 0.6f),
+                                    letterSpacing = 0.5.sp,
+                                    lineHeight = 15.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp)
+                        ) {
+                            items(starredMessages, key = { it.first.id }) { (msg, name) ->
+                                StarredMessageListItem(
+                                    message = msg,
+                                    name = name,
+                                    onSelect = { onStarredMessageSelect(msg.threadId, msg.id) }
+                                )
+                            }
+                        }
+                    }
                 } else {
-                    threads.filter { it.isArchived }
-                }
+                    val listThreads = if (page == 0) {
+                        threads.filter { !it.isArchived }
+                    } else {
+                        threads.filter { it.isArchived }
+                    }
 
-                if (listThreads.isEmpty()) {
+                    if (listThreads.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -906,6 +1122,7 @@ fun MainThreadsScreen(
                             )
                         }
                     }
+                }
                 }
             }
         }
@@ -1157,6 +1374,119 @@ fun ThreadListItem(
     }
 }
 
+@Composable
+fun StarredMessageListItem(
+    message: SmsMessage,
+    name: String,
+    onSelect: () -> Unit
+) {
+    val firstChar = (name.firstOrNull() ?: '?').toString().uppercase()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .height(IntrinsicSize.Min)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF1B1914), // Subtle gold/dark gradient
+                            Color(0xFF0D0E12)
+                        )
+                    )
+                )
+                .border(
+                    1.dp,
+                    Color(0x30FFD700), // Gold hint border
+                    RoundedCornerShape(16.dp)
+                )
+                .clickable { onSelect() }
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Avatar with gold-ish tint
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF8C7311), Color(0xFF332A06))
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = firstChar,
+                        color = Color(0xFFFFD700),
+                        fontSize = 16.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                // Main Info Column
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = FontFamily.Monospace,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = formatMinimalTimestamp(message.timestamp),
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = TextSecondary,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = message.body,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = "Starred",
+                    tint = Color(0xFFFFD700),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun ConversationScreen(
@@ -1167,11 +1497,16 @@ fun ConversationScreen(
     onBack: () -> Unit,
     onSendMessage: () -> Unit,
     selectedMessageIds: Set<Long>,
+    starredIds: Set<Long>,
+    scrollToMessageId: Long?,
     onToggleMessageSelection: (Long) -> Unit,
     onClearSelection: () -> Unit,
-    onDeleteMessages: (List<Long>) -> Unit
+    onDeleteMessages: (List<Long>) -> Unit,
+    onToggleStar: (Long) -> Unit,
+    onToggleStarMultiple: (Set<Long>) -> Unit
 ) {
     val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     val inSelectionMode = selectedMessageIds.isNotEmpty()
     val archiveManager = remember { ArchiveManager(context) }
 
@@ -1351,19 +1686,59 @@ fun ConversationScreen(
                         letterSpacing = 1.sp
                     )
                 }
-                IconButton(
-                    onClick = { showBulkDeleteConfirmDialog = true },
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF331414))
-                        .size(36.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete Selected",
-                        tint = Color(0xFFFF453A),
-                        modifier = Modifier.size(18.dp)
-                    )
+                    IconButton(
+                        onClick = { onToggleStarMultiple(selectedMessageIds) },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF2C2F3E))
+                            .size(36.dp)
+                    ) {
+                        val isAllStarred = selectedMessageIds.isNotEmpty() && selectedMessageIds.all { starredIds.contains(it) }
+                        Icon(
+                            imageVector = if (isAllStarred) Icons.Default.Star else Icons.Outlined.Star,
+                            contentDescription = "Star Selected",
+                            tint = Color(0xFFFFD700),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            val selectedMsgs = messages.filter { selectedMessageIds.contains(it.id) }
+                            val textToCopy = selectedMsgs.joinToString("\n\n") { it.body }
+                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(textToCopy))
+                            Toast.makeText(context, Translator.get("copied_to_clipboard"), Toast.LENGTH_SHORT).show()
+                            onClearSelection()
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF2C2F3E))
+                            .size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy Selected",
+                            tint = PureWhite,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { showBulkDeleteConfirmDialog = true },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF331414))
+                            .size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete Selected",
+                            tint = Color(0xFFFF453A),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         } else {
@@ -1444,19 +1819,38 @@ fun ConversationScreen(
         )
 
         // Deep fluid message lazy list
+        val listState = rememberLazyListState()
+        
+        LaunchedEffect(scrollToMessageId, messages) {
+            if (scrollToMessageId != null) {
+                val index = messages.indexOfFirst { it.id == scrollToMessageId }
+                if (index != -1) {
+                    listState.animateScrollToItem(index)
+                }
+            }
+        }
+
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        fontSizeMultiplier = (fontSizeMultiplier * zoom).coerceIn(0.7f, 2.2f)
+                    }
+                },
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(top = 20.dp, bottom = 24.dp)
         ) {
             items(messages, key = { it.id }) { message ->
                 val isSelected = selectedMessageIds.contains(message.id)
+                val isStarred = starredIds.contains(message.id)
                 MessageBubbleItem(
                     message = message,
                     isSelected = isSelected,
+                    isStarred = isStarred,
                     isInSelectionMode = inSelectionMode,
                     onToggleSelection = { onToggleMessageSelection(message.id) },
                     onTripleTapDelete = {
@@ -1466,6 +1860,7 @@ fun ConversationScreen(
                             messageToDeleteByTripleTap = message
                         }
                     },
+                    onDoubleTapStar = { onToggleStar(message.id) },
                     fontSizeMultiplier = fontSizeMultiplier
                 )
             }
@@ -1548,9 +1943,11 @@ fun ConversationScreen(
 fun MessageBubbleItem(
     message: SmsMessage,
     isSelected: Boolean,
+    isStarred: Boolean,
     isInSelectionMode: Boolean,
     onToggleSelection: () -> Unit,
     onTripleTapDelete: () -> Unit,
+    onDoubleTapStar: () -> Unit,
     fontSizeMultiplier: Float = 1.0f
 ) {
     val isMe = message.type == 2 // 2 corresponds to SENT folder type
@@ -1624,6 +2021,9 @@ fun MessageBubbleItem(
                                     tapCount = 1
                                 }
                                 lastTapTime = currentTime
+                                if (tapCount == 2) {
+                                    onDoubleTapStar()
+                                }
                                 if (tapCount >= 3) {
                                     onTripleTapDelete()
                                     tapCount = 0
@@ -1657,7 +2057,24 @@ fun MessageBubbleItem(
                 )
                 .padding(14.dp)
         ) {
-            LinkableText(text = message.body, fontSizeMultiplier = fontSizeMultiplier)
+            Box {
+                // Add bottom-right padding only when starred to keep star from clipping text
+                LinkableText(
+                    text = message.body,
+                    fontSizeMultiplier = fontSizeMultiplier,
+                    modifier = if (isStarred) Modifier.padding(end = 16.dp, bottom = 14.dp) else Modifier
+                )
+                if (isStarred) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "Starred",
+                        tint = Color(0xFFFFD700),
+                        modifier = Modifier
+                            .size(12.dp)
+                            .align(Alignment.BottomEnd)
+                    )
+                }
+            }
         }
     }
 }
@@ -2286,19 +2703,36 @@ private fun sendMessage(context: Context, number: String, body: String) {
             SmsManager.getDefault()
         }
 
-        // Deliver text
-        smsManager.sendTextMessage(number, null, body, null, null)
-
-        // Write to system Outbox/Sent folder path
+        // Write to system Outbox first to get the URI
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, number)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
             put(Telephony.Sms.READ, 1)
-            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_OUTBOX)
         }
-        context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
-        Toast.makeText(context, "SMS Sent", Toast.LENGTH_SHORT).show()
+        val uri = context.contentResolver.insert(Telephony.Sms.Outbox.CONTENT_URI, values)
+
+        // Create PendingIntent for sent status
+        val sentIntent = Intent(context, SmsSentReceiver::class.java).apply {
+            action = SmsSentReceiver.ACTION_SMS_SENT
+            putExtra(SmsSentReceiver.EXTRA_MESSAGE_URI, uri?.toString() ?: "")
+            putExtra(SmsSentReceiver.EXTRA_RECIPIENT, number)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val sentPendingIntent = PendingIntent.getBroadcast(
+            context, 
+            System.currentTimeMillis().toInt(), 
+            sentIntent, 
+            flags
+        )
+
+        // Deliver text
+        smsManager.sendTextMessage(number, null, body, sentPendingIntent, null)
     } catch (e: Exception) {
         Toast.makeText(context, "Send failed: ${e.message}", Toast.LENGTH_SHORT).show()
         e.printStackTrace()
@@ -2418,7 +2852,7 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
     return threadsList.sortedByDescending { it.timestamp }
 }
 
-private fun queryMessagesForThread(context: Context, threadId: Long): List<SmsMessage> {
+private fun queryMessagesForThread(context: Context, threadId: Long, deletedMessageIds: Set<Long>): List<SmsMessage> {
     val messages = mutableListOf<SmsMessage>()
     val uri = Uri.parse("content://sms")
     val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
@@ -2431,6 +2865,42 @@ private fun queryMessagesForThread(context: Context, threadId: Long): List<SmsMe
             arrayOf(threadId.toString()),
             "date ASC"
         )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex("_id")
+            val threadIdIndex = cursor.getColumnIndex("thread_id")
+            val addressIndex = cursor.getColumnIndex("address")
+            val bodyIndex = cursor.getColumnIndex("body")
+            val dateIndex = cursor.getColumnIndex("date")
+            val readIndex = cursor.getColumnIndex("read")
+            val typeIndex = cursor.getColumnIndex("type")
+
+            while (cursor.moveToNext()) {
+                val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
+                if (deletedMessageIds.contains(id)) continue
+                val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
+                val address = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
+                val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
+                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
+                val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
+                val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
+
+                messages.add(SmsMessage(id, tId, address, body, date, read, type))
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return messages
+}
+
+private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage> {
+    if (ids.isEmpty()) return emptyList()
+    val messages = mutableListOf<SmsMessage>()
+    val uri = Uri.parse("content://sms")
+    val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
+    
+    val selection = "_id IN (${ids.joinToString(",")})"
+    try {
+        context.contentResolver.query(uri, projection, selection, null, "date DESC")?.use { cursor ->
             val idIndex = cursor.getColumnIndex("_id")
             val threadIdIndex = cursor.getColumnIndex("thread_id")
             val addressIndex = cursor.getColumnIndex("address")
@@ -2538,7 +3008,11 @@ object Translator {
             "contact_no_phone" to "Contact has no phone number",
             "failed_contact_info" to "Failed to load contact info",
             "inbox_tab" to "INBOX",
-            "archive_tab" to "ARCHIVES"
+            "archive_tab" to "ARCHIVES",
+            "starred_tab" to "STARRED",
+            "no_starred_messages" to "[ NO STARRED MESSAGES ]",
+            "no_starred_desc" to "Starred messages will appear here for quick access.",
+            "copied_to_clipboard" to "COPIED TO CLIPBOARD"
         ),
         "es" to mapOf(
             "delete_thread" to "¿ELIMINAR HILO?",
@@ -2577,7 +3051,11 @@ object Translator {
             "contact_no_phone" to "El contacto no tiene número de teléfono",
             "failed_contact_info" to "Error al cargar la información del contacto",
             "inbox_tab" to "BANDEJA",
-            "archive_tab" to "ARCHIVOS"
+            "archive_tab" to "ARCHIVOS",
+            "starred_tab" to "DESTACADO",
+            "no_starred_messages" to "[ NO HAY MENSAJES DESTACADOS ]",
+            "no_starred_desc" to "Los mensajes destacados aparecerán aquí para un acceso rápido.",
+            "copied_to_clipboard" to "COPIADO AL PORTAPAPELES"
         ),
         "fr" to mapOf(
             "delete_thread" to "SUPPRIMER LE FIL?",
@@ -2616,7 +3094,11 @@ object Translator {
             "contact_no_phone" to "Le contact n'a pas de numéro de téléphone",
             "failed_contact_info" to "Échec du chargement des informations",
             "inbox_tab" to "BOÎTE",
-            "archive_tab" to "ARCHIVES"
+            "archive_tab" to "ARCHIVES",
+            "starred_tab" to "FAVORIS",
+            "no_starred_messages" to "[ AUCUN MESSAGE FAVORIS ]",
+            "no_starred_desc" to "Les messages favoris apparaîtront ici pour un accès rapide.",
+            "copied_to_clipboard" to "COPIÉ DANS LE PRESSE-PAPIERS"
         ),
         "de" to mapOf(
             "delete_thread" to "THREAD LÖSCHEN?",
@@ -2655,7 +3137,11 @@ object Translator {
             "contact_no_phone" to "Kontakt hat keine Telefonnummer",
             "failed_contact_info" to "Kontaktinfo konnte nicht geladen werden",
             "inbox_tab" to "POSTEINGANG",
-            "archive_tab" to "ARCHIV"
+            "archive_tab" to "ARCHIV",
+            "starred_tab" to "MARKIERT",
+            "no_starred_messages" to "[ KEINE MARKIERTEN NACHRICHTEN ]",
+            "no_starred_desc" to "Markierte Nachrichten werden hier für den schnellen Zugriff angezeigt.",
+            "copied_to_clipboard" to "IN ZWISCHENABLAGE KOPIERT"
         ),
         "zh" to mapOf(
             "delete_thread" to "删除会话？",
@@ -2694,7 +3180,11 @@ object Translator {
             "contact_no_phone" to "该联系人没有电话号码",
             "failed_contact_info" to "加载联系人信息失败",
             "inbox_tab" to "收件箱",
-            "archive_tab" to "归档箱"
+            "archive_tab" to "归档箱",
+            "starred_tab" to "星标",
+            "no_starred_messages" to "[ 无星标信息 ]",
+            "no_starred_desc" to "星标信息将在此处显示，以便快速访问。",
+            "copied_to_clipboard" to "已复制到剪贴板"
         ),
         "ja" to mapOf(
             "delete_thread" to "スレッドを削除しますか？",
@@ -2733,7 +3223,11 @@ object Translator {
             "contact_no_phone" to "連絡先に電話番号がありません",
             "failed_contact_info" to "連絡先情報の読み込みに失敗しました",
             "inbox_tab" to "受信箱",
-            "archive_tab" to "保管庫"
+            "archive_tab" to "保管庫",
+            "starred_tab" to "スター付き",
+            "no_starred_messages" to "[ スター付きメッセージなし ]",
+            "no_starred_desc" to "スター付きメッセージは、すばやくアクセスできるようにここに表示されます。",
+            "copied_to_clipboard" to "クリップボードにコピーしました"
         ),
         "hi" to mapOf(
             "delete_thread" to "थ्रेड हटाएं?",
@@ -2772,7 +3266,11 @@ object Translator {
             "contact_no_phone" to "संपर्क में कोई फ़ोन नंबर नहीं है",
             "failed_contact_info" to "संपर्क जानकारी लोड करने में विफल",
             "inbox_tab" to "इनबॉक्स",
-            "archive_tab" to "संग्रह"
+            "archive_tab" to "संग्रह",
+            "starred_tab" to "तारांकित",
+            "no_starred_messages" to "[ कोई तारांकित संदेश नहीं ]",
+            "no_starred_desc" to "तारांकित संदेश त्वरित पहुंच के लिए यहां दिखाई देंगे।",
+            "copied_to_clipboard" to "क्लिपबोर्ड पर कॉपी किया गया"
         ),
         "ar" to mapOf(
             "delete_thread" to "حذف المحادثة؟",
@@ -2811,7 +3309,11 @@ object Translator {
             "contact_no_phone" to "جهات الاتصال لا تملك رقم هاتف",
             "failed_contact_info" to "فشل في تحميل معلومات الاتصال",
             "inbox_tab" to "الرئيسية",
-            "archive_tab" to "الأرشيف"
+            "archive_tab" to "الأرشيف",
+            "starred_tab" to "المميزة بنجمة",
+            "no_starred_messages" to "[ لا توجد رسائل مميزة بنجمة ]",
+            "no_starred_desc" to "ستظهر الرسائل المميزة بنجمة هنا للوصول السريع.",
+            "copied_to_clipboard" to "تم النسخ إلى الحافظة"
         ),
         "pt" to mapOf(
             "delete_thread" to "EXCLUIR CONVERSA?",
@@ -2850,7 +3352,11 @@ object Translator {
             "contact_no_phone" to "O contato não possui número de telefone",
             "failed_contact_info" to "Falha ao carregar informações do contato",
             "inbox_tab" to "CAIXA",
-            "archive_tab" to "ARQUIVOS"
+            "archive_tab" to "ARQUIVOS",
+            "starred_tab" to "FAVORITOS",
+            "no_starred_messages" to "[ SEM MENSAGENS FAVORITAS ]",
+            "no_starred_desc" to "As mensagens com estrela aparecerão aqui para acesso rápido.",
+            "copied_to_clipboard" to "COPIADO PARA A ÁREA DE TRANSFERÊNCIA"
         ),
         "ru" to mapOf(
             "delete_thread" to "УДАЛИТЬ ДИАЛОГ?",
@@ -2889,7 +3395,11 @@ object Translator {
             "contact_no_phone" to "У контакта нет номера телефона",
             "failed_contact_info" to "Не удалось загрузить данные контакта",
             "inbox_tab" to "ВХОДЯЩИЕ",
-            "archive_tab" to "АРХИВ"
+            "archive_tab" to "АРХИВ",
+            "starred_tab" to "ОТМЕЧЕННЫЕ",
+            "no_starred_messages" to "[ НЕТ ОТМЕЧЕННЫХ СООБЩЕНИЙ ]",
+            "no_starred_desc" to "Здесь будут отображаться отмеченные сообщения для быстрого доступа.",
+            "copied_to_clipboard" to "СКОПИРОВАНО В БУФЕР ОБМЕНА"
         ),
         "it" to mapOf(
             "delete_thread" to "ELIMINA CONVERSAZIONE?",
@@ -2928,7 +3438,11 @@ object Translator {
             "contact_no_phone" to "Il contatto non ha un numero di telefono",
             "failed_contact_info" to "Impossibile caricare il contatto",
             "inbox_tab" to "INBOX",
-            "archive_tab" to "ARCHIVIO"
+            "archive_tab" to "ARCHIVIO",
+            "starred_tab" to "SPECIALI",
+            "no_starred_messages" to "[ NESSUN MESSAGGIO SPECIALE ]",
+            "no_starred_desc" to "I messaggi speciali appariranno qui per un accesso rapido.",
+            "copied_to_clipboard" to "COPIATO NEGLI APPUNTI"
         )
     )
 
@@ -2947,18 +3461,27 @@ object Translator {
 @Composable
 fun DeletedThreadsScreen(
     deletedIds: Set<Long>,
+    deletedMsgIds: Set<Long>,
     deleteManager: DeleteManager,
     onBack: () -> Unit,
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
     var deletedThreads by remember { mutableStateOf<List<SmsThread>>(emptyList()) }
+    var deletedMessages by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
+    var senderNamesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
-    LaunchedEffect(deletedIds) {
+    LaunchedEffect(deletedIds, deletedMsgIds) {
         withContext(Dispatchers.IO) {
             val threads = queryAllThreads(context, emptySet(), emptySet(), deletedIds, true)
+            val messages = queryMessagesByIds(context, deletedMsgIds)
+            val names = messages.map { it.address }.distinct().associateWith { address ->
+                getContactName(context, address) ?: address
+            }
             withContext(Dispatchers.Main) {
                 deletedThreads = threads
+                deletedMessages = messages
+                senderNamesMap = names
             }
         }
     }
@@ -3009,10 +3532,10 @@ fun DeletedThreadsScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (deletedThreads.isEmpty()) {
+        if (deletedThreads.isEmpty() && deletedMessages.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = "No deleted threads",
+                    text = "No deleted threads or messages",
                     color = TextSecondary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp
@@ -3023,22 +3546,247 @@ fun DeletedThreadsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 80.dp)
             ) {
-                items(deletedThreads, key = { it.threadId }) { thread ->
-                    ThreadListItem(
-                        thread = thread,
-                        isDeleted = true,
-                        onSelect = {}, // No action on select for deleted
-                        onArchive = {
-                            // Restore action
-                            deleteManager.restoreThread(thread.threadId)
-                            onRefresh()
+                if (deletedThreads.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "DELETED THREADS",
+                            color = TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                        )
+                    }
+                    items(deletedThreads, key = { "thread_${it.threadId}" }) { thread ->
+                        ThreadListItem(
+                            thread = thread,
+                            isDeleted = true,
+                            onSelect = {}, // No action on select for deleted
+                            onArchive = {
+                                // Restore action
+                                deleteManager.restoreThread(thread.threadId)
+                                onRefresh()
+                            },
+                            onDelete = {
+                                // Permanently delete
+                                deleteThread(context, thread.threadId)
+                                deleteManager.restoreThread(thread.threadId)
+                                onRefresh()
+                            }
+                        )
+                    }
+                }
+
+                if (deletedMessages.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "DELETED MESSAGES",
+                            color = TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                        )
+                    }
+                    items(deletedMessages, key = { "msg_${it.id}" }) { message ->
+                        DeletedMessageListItem(
+                            message = message,
+                            senderName = senderNamesMap[message.address] ?: message.address,
+                            onRestore = {
+                                deleteManager.restoreMessage(message.id)
+                                onRefresh()
+                            },
+                            onDelete = {
+                                deleteSmsMessages(context, listOf(message.id))
+                                deleteManager.restoreMessage(message.id)
+                                onRefresh()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeletedMessageListItem(
+    message: SmsMessage,
+    senderName: String,
+    onRestore: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val firstChar = (senderName.firstOrNull() ?: '?').toString().uppercase()
+
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    val animatedOffsetX by animateFloatAsState(targetValue = offsetX, label = "swipe_offset")
+    val density = LocalDensity.current
+    val swipeThresholdPx = with(density) { 100.dp.toPx() }
+    
+    var isDeleting by remember { mutableStateOf(false) }
+    LaunchedEffect(isDeleting) {
+        if (isDeleting) {
+            offsetX = if (offsetX > 0) 2000f else -2000f
+            kotlinx.coroutines.delay(500)
+            onDelete()
+            isDeleting = false
+            offsetX = 0f
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .height(IntrinsicSize.Min)
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF2C0F14))
+                .border(1.dp, Color(0xFFFF453A).copy(alpha = 0.25f), RoundedCornerShape(16.dp))
+                .padding(horizontal = 20.dp),
+            contentAlignment = if (offsetX < 0) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Swipe to delete",
+                    tint = Color(0xFFFF453A),
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "DELETE",
+                    color = Color(0xFFFF453A),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(animatedOffsetX.roundToInt(), 0) }
+                .pointerInput(message.id) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (offsetX < -swipeThresholdPx || offsetX > swipeThresholdPx) {
+                                isDeleting = true
+                            } else {
+                                offsetX = 0f
+                            }
                         },
-                        onDelete = {
-                            // Permanently delete
-                            deleteThread(context, thread.threadId)
-                            deleteManager.restoreThread(thread.threadId)
-                            onRefresh()
+                        onDragCancel = {
+                            if (!isDeleting) offsetX = 0f
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (!isDeleting) {
+                                change.consume()
+                                offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
+                            }
                         }
+                    )
+                }
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF111319),
+                            Color(0xFF0D0E12)
+                        )
+                    )
+                )
+                .border(
+                    1.dp,
+                    Color(0xFF1D2027),
+                    RoundedCornerShape(16.dp)
+                )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF22252E), Color(0xFF16181F))
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = firstChar,
+                        color = TextPrimary,
+                        fontSize = 16.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = senderName,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = FontFamily.Monospace,
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = formatMinimalTimestamp(message.timestamp),
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = TextSecondary,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = message.body,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Box(
+                    modifier = Modifier
+                        .border(1.dp, Color(0xFF23252E), RoundedCornerShape(8.dp))
+                        .clickable { onRestore() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "RESTORE",
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = AccentOrange,
+                        letterSpacing = 0.5.sp
                     )
                 }
             }
