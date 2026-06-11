@@ -222,7 +222,7 @@ class SmsReceiver : BroadcastReceiver() {
             }
             val copyPendingIntent = PendingIntent.getBroadcast(context, notifId + 1, copyIntent, actionFlags)
             builder.addAction(
-                android.R.drawable.ic_menu_copy,
+                R.drawable.ic_content_copy,
                 "COPY CODE: $otp",
                 copyPendingIntent
             )
