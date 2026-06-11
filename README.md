@@ -1,4 +1,4 @@
-# Minimal SMS
+# SMS Lite
 
 A high-performance, dark-theme-only Android SMS client built with Jetpack Compose. Designed to be the default SMS app — fast, battery-efficient, and completely bloat-free.
 

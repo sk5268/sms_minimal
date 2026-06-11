@@ -222,8 +222,8 @@ class SmsReceiver : BroadcastReceiver() {
             }
             val copyPendingIntent = PendingIntent.getBroadcast(context, notifId + 1, copyIntent, actionFlags)
             builder.addAction(
-                0, // 0 means no custom icon to bypass double/overlapping icons on modern OS versions
-                "COPY CODE: $otp",
+                R.drawable.ic_content_copy,
+                otp,
                 copyPendingIntent
             )
         }

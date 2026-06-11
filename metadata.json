@@ -1,6 +1,0 @@
-{
-  "name": "Minimal SMS",
-  "description": "A high-performance, dark-theme-only, battery-efficient application designed as a default SMS client with OTP parsing, conversation archiving, and zero bloated features.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

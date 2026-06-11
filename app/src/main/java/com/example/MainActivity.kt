@@ -561,17 +561,31 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     }
 
     // 3. Starred Messages Querying Hook
-    LaunchedEffect(permissionsGranted, starredIds, refreshCounter, deletedMessageIds) {
+    LaunchedEffect(permissionsGranted, starredIds, refreshCounter, deletedMessageIds, deletedIds) {
         if (permissionsGranted) {
             withContext(Dispatchers.IO) {
                 val validStarredIds = starredIds.filter { !deletedMessageIds.contains(it) }.toSet()
                 val msgs = queryMessagesByIds(context, validStarredIds)
-                val namedMsgs = msgs.map { msg ->
-                    val name = getContactName(context, msg.address) ?: msg.address
-                    msg to name
-                }
-                withContext(Dispatchers.Main) {
-                    starredMessages = namedMsgs
+                if (msgs != null) {
+                    // If some validStarredIds are not found in the DB (meaning they were permanently deleted),
+                    // we clean them up from starManager's Shared Preferences.
+                    val queriedMsgIds = msgs.map { it.id }.toSet()
+                    val missingStarredIds = validStarredIds.filter { !queriedMsgIds.contains(it) }
+                    if (missingStarredIds.isNotEmpty()) {
+                        val starPrefs = context.getSharedPreferences("sms_star_prefs", Context.MODE_PRIVATE)
+                        val starEditor = starPrefs.edit()
+                        missingStarredIds.forEach { starEditor.remove(it.toString()) }
+                        starEditor.apply()
+                    }
+
+                    val filteredMsgs = msgs.filter { !deletedIds.contains(it.threadId) }
+                    val namedMsgs = filteredMsgs.map { msg ->
+                        val name = getContactName(context, msg.address) ?: msg.address
+                        msg to name
+                    }
+                    withContext(Dispatchers.Main) {
+                        starredMessages = namedMsgs
+                    }
                 }
             }
         }
@@ -670,7 +684,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "MINIMAL SMS",
+                        text = "SMS LITE",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
@@ -2892,7 +2906,7 @@ private fun queryMessagesForThread(context: Context, threadId: Long, deletedMess
     return messages
 }
 
-private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage> {
+private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage>? {
     if (ids.isEmpty()) return emptyList()
     val messages = mutableListOf<SmsMessage>()
     val uri = Uri.parse("content://sms")
@@ -2900,29 +2914,34 @@ private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessag
     
     val selection = "_id IN (${ids.joinToString(",")})"
     try {
-        context.contentResolver.query(uri, projection, selection, null, "date DESC")?.use { cursor ->
-            val idIndex = cursor.getColumnIndex("_id")
-            val threadIdIndex = cursor.getColumnIndex("thread_id")
-            val addressIndex = cursor.getColumnIndex("address")
-            val bodyIndex = cursor.getColumnIndex("body")
-            val dateIndex = cursor.getColumnIndex("date")
-            val readIndex = cursor.getColumnIndex("read")
-            val typeIndex = cursor.getColumnIndex("type")
+        val cursor = context.contentResolver.query(uri, projection, selection, null, "date DESC")
+        if (cursor == null) {
+            return null
+        }
+        cursor.use { c ->
+            val idIndex = c.getColumnIndex("_id")
+            val threadIdIndex = c.getColumnIndex("thread_id")
+            val addressIndex = c.getColumnIndex("address")
+            val bodyIndex = c.getColumnIndex("body")
+            val dateIndex = c.getColumnIndex("date")
+            val readIndex = c.getColumnIndex("read")
+            val typeIndex = c.getColumnIndex("type")
 
-            while (cursor.moveToNext()) {
-                val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
-                val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
-                val address = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
-                val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
-                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
-                val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
-                val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
+            while (c.moveToNext()) {
+                val id = if (idIndex != -1) c.getLong(idIndex) else 0L
+                val tId = if (threadIdIndex != -1) c.getLong(threadIdIndex) else 0L
+                val address = if (addressIndex != -1) c.getString(addressIndex) ?: "" else ""
+                val body = if (bodyIndex != -1) c.getString(bodyIndex) ?: "" else ""
+                val date = if (dateIndex != -1) c.getLong(dateIndex) else 0L
+                val read = if (readIndex != -1) c.getInt(readIndex) else 1
+                val type = if (typeIndex != -1) c.getInt(typeIndex) else 1
 
                 messages.add(SmsMessage(id, tId, address, body, date, read, type))
             }
         }
     } catch (e: Exception) {
         e.printStackTrace()
+        return null
     }
     return messages
 }
@@ -3474,7 +3493,7 @@ fun DeletedThreadsScreen(
     LaunchedEffect(deletedIds, deletedMsgIds) {
         withContext(Dispatchers.IO) {
             val threads = queryAllThreads(context, emptySet(), emptySet(), deletedIds, true)
-            val messages = queryMessagesByIds(context, deletedMsgIds)
+            val messages = queryMessagesByIds(context, deletedMsgIds) ?: emptyList()
             val names = messages.map { it.address }.distinct().associateWith { address ->
                 getContactName(context, address) ?: address
             }
