@@ -50,7 +50,7 @@ class SmsSentReceiver : BroadcastReceiver() {
             }
 
             // Show a toast and notification to the user
-            Toast.makeText(context, "Failed to send SMS to $recipient", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, Translator.get("send_failed_to", recipient), Toast.LENGTH_LONG).show()
             showFailureNotification(context, recipient)
         }
     }
@@ -70,8 +70,8 @@ class SmsSentReceiver : BroadcastReceiver() {
 
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_error)
-            .setContentTitle("Message Failed")
-            .setContentText("Failed to send message to $recipient.")
+            .setContentTitle(Translator.get("message_failed"))
+            .setContentText(Translator.get("send_failed_to", recipient))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
 

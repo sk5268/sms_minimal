@@ -31,7 +31,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val clip = ClipData.newPlainText("OTP", otp)
                     clipboard.setPrimaryClip(clip)
                     // Display micro toast without lagging main ui
-                    Toast.makeText(context, "OTP Copied", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, Translator.get("otp_copied"), Toast.LENGTH_SHORT).show()
                 }
                 cancelNotification(context, notifId)
             }
@@ -42,13 +42,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         val uri = Uri.parse(uriString)
                         val deletedRows = context.contentResolver.delete(uri, null, null)
                         if (deletedRows > 0) {
-                            Toast.makeText(context, "SMS Deleted", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, Translator.get("sms_deleted"), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Clear from provider", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, Translator.get("clear_from_provider"), Toast.LENGTH_SHORT).show()
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        Toast.makeText(context, "Delete failed (Access check)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, Translator.get("delete_failed"), Toast.LENGTH_SHORT).show()
                     }
                 }
                 cancelNotification(context, notifId)

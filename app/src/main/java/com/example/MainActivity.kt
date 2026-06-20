@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
 import android.provider.Telephony
+import android.telephony.PhoneNumberUtils
 import android.telephony.SmsManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -332,7 +333,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun deleteThread(context: Context, threadId: Long): Boolean {
+private fun permanentlyDeleteThread(context: Context, threadId: Long): Boolean {
     return try {
         val deletedCount = context.contentResolver.delete(
             Uri.parse("content://sms/conversations/$threadId"),
@@ -475,7 +476,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     }
 
     // Register Background ContentObserver for Database Changes
-    DisposableEffect(refreshCounter) {
+    DisposableEffect(Unit) {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
                 // Re-trigger load atomically
@@ -531,11 +532,14 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                     
                     // If target sender is provided from notification, open conversation automatically
                     if (targetSender != null) {
+                        // Use PhoneNumberUtils.compare for fuzzy matching (handles +91 vs 0 vs raw digits)
+                        // Also try exact match first for alphanumeric senders (e.g. "HDFC-BANK")
                         val found = dbThreads.find { it.address == targetSender }
+                            ?: dbThreads.find { PhoneNumberUtils.compare(it.address, targetSender) }
                         if (found != null) {
                             activeThread = found
                         } else {
-                            // If thread doesn't exist, navigate to compose directly
+                            // If thread genuinely doesn't exist, navigate to compose directly
                             newRecipients = listOf(ContactRecipient(name = null, number = targetSender))
                             isNewMessageOpen = true
                         }
@@ -1002,7 +1006,7 @@ fun MainThreadsScreen(
                         DropdownMenuItem(
                             text = { 
                                 Text(
-                                    "Recently Deleted", 
+                                    Translator.get("recently_deleted"), 
                                     color = TextPrimary,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp
@@ -2529,7 +2533,7 @@ fun NewMessageScreen(
                 modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f),
                 title = {
                     Text(
-                        text = "Select Contacts",
+                        text = Translator.get("select_contacts"),
                         color = PureWhite,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
@@ -2548,7 +2552,7 @@ fun NewMessageScreen(
                         ) {
                             if (searchQuery.isEmpty()) {
                                 Text(
-                                    text = "Search contacts...",
+                                    text = Translator.get("search_contacts"),
                                     fontSize = 11.sp,
                                     color = TextSecondary.copy(alpha = 0.6f),
                                     fontFamily = FontFamily.Monospace
@@ -2745,8 +2749,18 @@ private fun sendMessage(context: Context, number: String, body: String) {
             flags
         )
 
-        // Deliver text
-        smsManager.sendTextMessage(number, null, body, sentPendingIntent, null)
+        // Deliver text (handles long SMS (>160 characters) by dividing the message)
+        val parts = smsManager.divideMessage(body)
+        if (parts.size == 1) {
+            smsManager.sendTextMessage(number, null, body, sentPendingIntent, null)
+        } else {
+            @Suppress("UNCHECKED_CAST")
+            val sentIntents = ArrayList<PendingIntent?>().apply {
+                add(sentPendingIntent)
+                repeat(parts.size - 1) { add(null) }
+            } as ArrayList<PendingIntent>
+            smsManager.sendMultipartTextMessage(number, null, parts, sentIntents, null)
+        }
     } catch (e: Exception) {
         Toast.makeText(context, "Send failed: ${e.message}", Toast.LENGTH_SHORT).show()
         e.printStackTrace()
@@ -2812,7 +2826,7 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
             val typeIndex = cursor.getColumnIndex("type")
 
             val tempMessages = mutableListOf<SmsMessage>()
-            // Standard limit on threads load to guarantee low RAM foot print & fast query execution times
+            // Limit on threads load to guarantee low RAM foot print & fast query execution times
             var count = 0
             while (cursor.moveToNext() && count < 800) {
                 val threadId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
@@ -2838,7 +2852,10 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
                 }
                 
                 val lastMsg = msgs.firstOrNull()
-                val address = lastMsg?.address ?: "Unknown"
+                val address = msgs.firstOrNull { it.type == 1 }?.address 
+                    ?: msgs.firstOrNull { it.address.isNotEmpty() && it.address != "Unknown" }?.address 
+                    ?: lastMsg?.address 
+                    ?: "Unknown"
 
                 val name = contactCache.getOrPut(address) {
                     getContactName(context, address) ?: address
@@ -2912,9 +2929,11 @@ private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessag
     val uri = Uri.parse("content://sms")
     val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
     
-    val selection = "_id IN (${ids.joinToString(",")})"
+    val placeholders = ids.joinToString(",") { "?" }
+    val selection = "_id IN ($placeholders)"
+    val selectionArgs = ids.map { it.toString() }.toTypedArray()
     try {
-        val cursor = context.contentResolver.query(uri, projection, selection, null, "date DESC")
+        val cursor = context.contentResolver.query(uri, projection, selection, selectionArgs, "date DESC")
         if (cursor == null) {
             return null
         }
@@ -3031,7 +3050,24 @@ object Translator {
             "starred_tab" to "STARRED",
             "no_starred_messages" to "[ NO STARRED MESSAGES ]",
             "no_starred_desc" to "Starred messages will appear here for quick access.",
-            "copied_to_clipboard" to "COPIED TO CLIPBOARD"
+            "copied_to_clipboard" to "COPIED TO CLIPBOARD",
+            "recently_deleted" to "Recently Deleted",
+            "deleted_threads" to "DELETED THREADS",
+            "deleted_messages" to "DELETED MESSAGES",
+            "restore" to "RESTORE",
+            "select_contacts" to "Select Contacts",
+            "search_contacts" to "Search contacts...",
+            "deleted_info_banner" to "Deleted Messages will be permanently removed in 6 hours.",
+            "no_deleted_items" to "No deleted threads or messages",
+            "delete_message_action" to "DELETE MESSAGE",
+            "otp_copied" to "OTP Copied",
+            "sms_deleted" to "SMS Deleted",
+            "clear_from_provider" to "Cleared from database",
+            "delete_failed" to "Delete failed",
+            "send_failed_to" to "Failed to send SMS to %s",
+            "message_failed" to "Message Failed",
+            "mms_received_title" to "MMS Message",
+            "mms_received_body" to "MMS or Group Message received (unsupported)"
         ),
         "es" to mapOf(
             "delete_thread" to "¿ELIMINAR HILO?",
@@ -3074,7 +3110,24 @@ object Translator {
             "starred_tab" to "DESTACADO",
             "no_starred_messages" to "[ NO HAY MENSAJES DESTACADOS ]",
             "no_starred_desc" to "Los mensajes destacados aparecerán aquí para un acceso rápido.",
-            "copied_to_clipboard" to "COPIADO AL PORTAPAPELES"
+            "copied_to_clipboard" to "COPIADO AL PORTAPAPELES",
+            "recently_deleted" to "Eliminados recientemente",
+            "deleted_threads" to "HILOS ELIMINADOS",
+            "deleted_messages" to "MENSAJES ELIMINADOS",
+            "restore" to "RESTABLECER",
+            "select_contacts" to "Seleccionar contactos",
+            "search_contacts" to "Buscar contactos...",
+            "deleted_info_banner" to "Los mensajes eliminados se eliminarán permanentemente en 6 horas.",
+            "no_deleted_items" to "No hay hilos ni mensajes eliminados",
+            "delete_message_action" to "ELIMINAR MENSAJE",
+            "otp_copied" to "OTP copiado",
+            "sms_deleted" to "SMS eliminado",
+            "clear_from_provider" to "Borrado de la base de datos",
+            "delete_failed" to "Error al eliminar",
+            "send_failed_to" to "Error al enviar SMS a %s",
+            "message_failed" to "Mensaje fallido",
+            "mms_received_title" to "Mensaje MMS",
+            "mms_received_body" to "Mensaje MMS o de grupo recibido (no compatible)"
         ),
         "fr" to mapOf(
             "delete_thread" to "SUPPRIMER LE FIL?",
@@ -3117,7 +3170,24 @@ object Translator {
             "starred_tab" to "FAVORIS",
             "no_starred_messages" to "[ AUCUN MESSAGE FAVORIS ]",
             "no_starred_desc" to "Les messages favoris apparaîtront ici pour un accès rapide.",
-            "copied_to_clipboard" to "COPIÉ DANS LE PRESSE-PAPIERS"
+            "copied_to_clipboard" to "COPIÉ DANS LE PRESSE-PAPIERS",
+            "recently_deleted" to "Récemment supprimés",
+            "deleted_threads" to "FILS SUPPRIMÉS",
+            "deleted_messages" to "MESSAGES SUPPRIMÉS",
+            "restore" to "RESTAURER",
+            "select_contacts" to "Sélectionner des contacts",
+            "search_contacts" to "Rechercher des contacts...",
+            "deleted_info_banner" to "Les messages supprimés seront définitivement supprimés dans 6 heures.",
+            "no_deleted_items" to "Aucun fil ou message supprimé",
+            "delete_message_action" to "SUPPRIMER LE MESSAGE",
+            "otp_copied" to "OTP copié",
+            "sms_deleted" to "SMS supprimé",
+            "clear_from_provider" to "Effacé de la base de données",
+            "delete_failed" to "Échec de la suppression",
+            "send_failed_to" to "Échec de l'envoi du SMS à %s",
+            "message_failed" to "Échec du message",
+            "mms_received_title" to "Message MMS",
+            "mms_received_body" to "MMS ou message de groupe reçu (non supporté)"
         ),
         "de" to mapOf(
             "delete_thread" to "THREAD LÖSCHEN?",
@@ -3160,7 +3230,24 @@ object Translator {
             "starred_tab" to "MARKIERT",
             "no_starred_messages" to "[ KEINE MARKIERTEN NACHRICHTEN ]",
             "no_starred_desc" to "Markierte Nachrichten werden hier für den schnellen Zugriff angezeigt.",
-            "copied_to_clipboard" to "IN ZWISCHENABLAGE KOPIERT"
+            "copied_to_clipboard" to "IN ZWISCHENABLAGE KOPIERT",
+            "recently_deleted" to "Kürzlich gelöscht",
+            "deleted_threads" to "GELÖSCHTE THREADS",
+            "deleted_messages" to "GELÖSCHTE NACHRICHTEN",
+            "restore" to "WIEDERHERSTELLEN",
+            "select_contacts" to "Kontakte auswählen",
+            "search_contacts" to "Kontakte suchen...",
+            "deleted_info_banner" to "Gelöschte Nachrichten werden in 6 Stunden dauerhaft entfernt.",
+            "no_deleted_items" to "Keine gelöschten Threads oder Nachrichten",
+            "delete_message_action" to "NACHRICHT LÖSCHEN",
+            "otp_copied" to "OTP kopiert",
+            "sms_deleted" to "SMS gelöscht",
+            "clear_from_provider" to "Aus der Datenbank gelöscht",
+            "delete_failed" to "Löschen fehlgeschlagen",
+            "send_failed_to" to "SMS an %s konnte nicht gesendet werden",
+            "message_failed" to "Nachricht fehlgeschlagen",
+            "mms_received_title" to "MMS-Nachricht",
+            "mms_received_body" to "MMS oder Gruppenachricht empfangen (nicht unterstützt)"
         ),
         "zh" to mapOf(
             "delete_thread" to "删除会话？",
@@ -3203,7 +3290,24 @@ object Translator {
             "starred_tab" to "星标",
             "no_starred_messages" to "[ 无星标信息 ]",
             "no_starred_desc" to "星标信息将在此处显示，以便快速访问。",
-            "copied_to_clipboard" to "已复制到剪贴板"
+            "copied_to_clipboard" to "已复制到剪贴板",
+            "recently_deleted" to "最近删除",
+            "deleted_threads" to "已删除的会话",
+            "deleted_messages" to "已删除的信息",
+            "restore" to "恢复",
+            "select_contacts" to "选择联系人",
+            "search_contacts" to "搜索联系人...",
+            "deleted_info_banner" to "已删除的信息将在 6 小时内永久删除。",
+            "no_deleted_items" to "无已删除的会话或信息",
+            "delete_message_action" to "删除短信",
+            "otp_copied" to "OTP已复制",
+            "sms_deleted" to "短信已删除",
+            "clear_from_provider" to "已从数据库清除",
+            "delete_failed" to "删除失败",
+            "send_failed_to" to "向 %s 发送短信失败",
+            "message_failed" to "发送失败",
+            "mms_received_title" to "MMS短信",
+            "mms_received_body" to "收到MMS或群组短信（不支持）"
         ),
         "ja" to mapOf(
             "delete_thread" to "スレッドを削除しますか？",
@@ -3227,7 +3331,7 @@ object Translator {
             "type_dispatch_envelope" to "メッセージを入力...",
             "send" to "送信",
             "delete_selected_messages" to "選択したメッセージを削除？",
-            "delete_selected_messages_desc" to "選択された %d 件のメッセージを完全に削除しますか？",
+            "delete_selected_messages_desc" to "選択された %d 件 of メッセージを完全に削除しますか？",
             "selected_count" to "%d 件選択中",
             "delete_message" to "メッセージを削除しますか？",
             "delete_message_desc" to "このメッセージを永久に削除しますか？",
@@ -3246,7 +3350,24 @@ object Translator {
             "starred_tab" to "スター付き",
             "no_starred_messages" to "[ スター付きメッセージなし ]",
             "no_starred_desc" to "スター付きメッセージは、すばやくアクセスできるようにここに表示されます。",
-            "copied_to_clipboard" to "クリップボードにコピーしました"
+            "copied_to_clipboard" to "クリップボードにコピーしました",
+            "recently_deleted" to "最近削除された項目",
+            "deleted_threads" to "削除されたスレッド",
+            "deleted_messages" to "削除されたメッセージ",
+            "restore" to "復元",
+            "select_contacts" to "連絡先を選択",
+            "search_contacts" to "連絡先を検索...",
+            "deleted_info_banner" to "削除されたメッセージは6時間後に完全に削除されます。",
+            "no_deleted_items" to "削除されたスレッドまたはメッセージはありません",
+            "delete_message_action" to "メッセージ削除",
+            "otp_copied" to "OTPをコピーしました",
+            "sms_deleted" to "SMSを削除しました",
+            "clear_from_provider" to "データベースからクリアされました",
+            "delete_failed" to "削除に失敗しました",
+            "send_failed_to" to "%s へのSMS送信に失敗しました",
+            "message_failed" to "送信失敗",
+            "mms_received_title" to "MMSメッセージ",
+            "mms_received_body" to "MMSまたはグループメッセージを受信しました（未対応）"
         ),
         "hi" to mapOf(
             "delete_thread" to "थ्रेड हटाएं?",
@@ -3289,7 +3410,24 @@ object Translator {
             "starred_tab" to "तारांकित",
             "no_starred_messages" to "[ कोई तारांकित संदेश नहीं ]",
             "no_starred_desc" to "तारांकित संदेश त्वरित पहुंच के लिए यहां दिखाई देंगे।",
-            "copied_to_clipboard" to "क्लिपबोर्ड पर कॉपी किया गया"
+            "copied_to_clipboard" to "क्लिपबोर्ड पर कॉपी किया गया",
+            "recently_deleted" to "हाल ही में हटाए गए",
+            "deleted_threads" to "हटाए गए थ्रेड",
+            "deleted_messages" to "हटाए गए संदेश",
+            "restore" to "पुनर्स्थापित करें",
+            "select_contacts" to "संपर्क चुनें",
+            "search_contacts" to "संपर्क खोजें...",
+            "deleted_info_banner" to "हटाए गए संदेश 6 घंटे में स्थायी रूप से हटा दिए जाएंगे।",
+            "no_deleted_items" to "कोई हटाए गए थ्रेड या संदेश नहीं",
+            "delete_message_action" to "संदेश हटाएं",
+            "otp_copied" to "ओटीपी कॉपी किया गया",
+            "sms_deleted" to "एसएमएस हटा दिया गया",
+            "clear_from_provider" to "डेटाबेस से हटा दिया गया",
+            "delete_failed" to "हटाना विफल रहा",
+            "send_failed_to" to "%s को एसएमएस भेजने में विफल",
+            "message_failed" to "संदेश विफल",
+            "mms_received_title" to "एमएमएस संदेश",
+            "mms_received_body" to "एमएमएस या समूह संदेश प्राप्त हुआ (असमर्थित)"
         ),
         "ar" to mapOf(
             "delete_thread" to "حذف المحادثة؟",
@@ -3332,7 +3470,24 @@ object Translator {
             "starred_tab" to "المميزة بنجمة",
             "no_starred_messages" to "[ لا توجد رسائل مميزة بنجمة ]",
             "no_starred_desc" to "ستظهر الرسائل المميزة بنجمة هنا للوصول السريع.",
-            "copied_to_clipboard" to "تم النسخ إلى الحافظة"
+            "copied_to_clipboard" to "تم النسخ إلى الحافظة",
+            "recently_deleted" to "المحذوفة مؤخراً",
+            "deleted_threads" to "المحادثات المحذوفة",
+            "deleted_messages" to "الرسائل المحذوفة",
+            "restore" to "استعادة",
+            "select_contacts" to "تحديد جهات الاتصال",
+            "search_contacts" to "البحث عن جهات اتصال...",
+            "deleted_info_banner" to "سيتم حذف الرسائل المحذوفة نهائياً خلال 6 ساعات.",
+            "no_deleted_items" to "لا توجد محادثات أو رسائل محذوفة",
+            "delete_message_action" to "حذف الرسالة",
+            "otp_copied" to "تم نسخ رمز OTP",
+            "sms_deleted" to "تم حذف الرسالة",
+            "clear_from_provider" to "تم المسح من قاعدة البيانات",
+            "delete_failed" to "فشل الحذف",
+            "send_failed_to" to "فشل إرسال الرسالة إلى %s",
+            "message_failed" to "فشل إرسال الرسالة",
+            "mms_received_title" to "رسالة MMS",
+            "mms_received_body" to "تم استلام رسالة MMS أو رسالة جماعية (غير مدعومة)"
         ),
         "pt" to mapOf(
             "delete_thread" to "EXCLUIR CONVERSA?",
@@ -3375,7 +3530,24 @@ object Translator {
             "starred_tab" to "FAVORITOS",
             "no_starred_messages" to "[ SEM MENSAGENS FAVORITAS ]",
             "no_starred_desc" to "As mensagens com estrela aparecerão aqui para acesso rápido.",
-            "copied_to_clipboard" to "COPIADO PARA A ÁREA DE TRANSFERÊNCIA"
+            "copied_to_clipboard" to "COPIADO PARA A ÁREA DE TRANSFERÊNCIA",
+            "recently_deleted" to "Apagadas recentemente",
+            "deleted_threads" to "CONVERSAS EXCLUÍDAS",
+            "deleted_messages" to "MENSAGENS EXCLUÍDAS",
+            "restore" to "RESTAURAR",
+            "select_contacts" to "Selecionar contatos",
+            "search_contacts" to "Pesquisar contatos...",
+            "deleted_info_banner" to "As mensagens excluídas serão removidas permanentemente em 6 horas.",
+            "no_deleted_items" to "Nenhuma conversa ou mensagem excluída",
+            "delete_message_action" to "EXCLUIR MENSAGEM",
+            "otp_copied" to "OTP copiado",
+            "sms_deleted" to "SMS excluído",
+            "clear_from_provider" to "Limpo do banco de dados",
+            "delete_failed" to "Falha ao excluir",
+            "send_failed_to" to "Falha ao enviar SMS para %s",
+            "message_failed" to "Falha na mensagem",
+            "mms_received_title" to "Mensagem MMS",
+            "mms_received_body" to "MMS ou mensagem de grupo recebida (não suportada)"
         ),
         "ru" to mapOf(
             "delete_thread" to "УДАЛИТЬ ДИАЛОГ?",
@@ -3418,7 +3590,24 @@ object Translator {
             "starred_tab" to "ОТМЕЧЕННЫЕ",
             "no_starred_messages" to "[ НЕТ ОТМЕЧЕННЫХ СООБЩЕНИЙ ]",
             "no_starred_desc" to "Здесь будут отображаться отмеченные сообщения для быстрого доступа.",
-            "copied_to_clipboard" to "СКОПИРОВАНО В БУФЕР ОБМЕНА"
+            "copied_to_clipboard" to "СКОПИРОВАНО В БУФЕР ОБМЕНА",
+            "recently_deleted" to "Недавно удаленные",
+            "deleted_threads" to "УДАЛЕННЫЕ ДИАЛОГИ",
+            "deleted_messages" to "УДАЛЕННЫЕ СООБЩЕНИЯ",
+            "restore" to "ВОССТАНОВИТЬ",
+            "select_contacts" to "Выбрать контакты",
+            "search_contacts" to "Поиск контактов...",
+            "deleted_info_banner" to "Удаленные сообщения будут окончательно удалены через 6 часов.",
+            "no_deleted_items" to "Нет удаленных диалогов или сообщений",
+            "delete_message_action" to "УДАЛИТЬ СООБЩЕНИЕ",
+            "otp_copied" to "OTP скопирован",
+            "sms_deleted" to "SMS удалено",
+            "clear_from_provider" to "Очищено из базы данных",
+            "delete_failed" to "Ошибка удаления",
+            "send_failed_to" to "Не удалось отправить SMS на %s",
+            "message_failed" to "Ошибка отправки сообщения",
+            "mms_received_title" to "MMS-сообщение",
+            "mms_received_body" to "Получено MMS или групповое сообщение (не поддерживается)"
         ),
         "it" to mapOf(
             "delete_thread" to "ELIMINA CONVERSAZIONE?",
@@ -3461,7 +3650,24 @@ object Translator {
             "starred_tab" to "SPECIALI",
             "no_starred_messages" to "[ NESSUN MESSAGGIO SPECIALE ]",
             "no_starred_desc" to "I messaggi speciali appariranno qui per un accesso rapido.",
-            "copied_to_clipboard" to "COPIATO NEGLI APPUNTI"
+            "copied_to_clipboard" to "COPIATO NEGLI APPUNTI",
+            "recently_deleted" to "Eliminati di recente",
+            "deleted_threads" to "CONVERSAZIONI ELIMINATE",
+            "deleted_messages" to "MESSAGGI ELIMINATI",
+            "restore" to "RIPRISTINA",
+            "select_contacts" to "Seleziona contatti",
+            "search_contacts" to "Cerca contatti...",
+            "deleted_info_banner" to "I messaggi eliminati verranno rimossi permanentemente entro 6 ore.",
+            "no_deleted_items" to "Nessuna conversazione o messaggio eliminato",
+            "delete_message_action" to "ELIMINA MESSAGGIO",
+            "otp_copied" to "OTP copiato",
+            "sms_deleted" to "SMS eliminato",
+            "clear_from_provider" to "Cancellato dal database",
+            "delete_failed" to "Eliminazione fallita",
+            "send_failed_to" to "Invio SMS a %s fallito",
+            "message_failed" to "Messaggio fallito",
+            "mms_received_title" to "Messaggio MMS",
+            "mms_received_body" to "MMS o messaggio di gruppo ricevuto (non supportato)"
         )
     )
 
@@ -3515,14 +3721,14 @@ fun DeletedThreadsScreen(
         ) {
             IconButton(onClick = onBack, modifier = Modifier.size(24.dp)) {
                 Icon(
-                    imageVector = Icons.Default.ArrowBack,
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
                     tint = PureWhite
                 )
             }
             Spacer(modifier = Modifier.width(16.dp))
             Text(
-                text = "RECENTLY DELETED",
+                text = Translator.get("recently_deleted").uppercase(),
                 color = PureWhite,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
@@ -3540,7 +3746,7 @@ fun DeletedThreadsScreen(
                 .padding(12.dp)
         ) {
             Text(
-                text = "Deleted Messages will be permanently removed in 6 hours.",
+                text = Translator.get("deleted_info_banner"),
                 color = Color(0xFFFF453A),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 10.sp,
@@ -3554,7 +3760,7 @@ fun DeletedThreadsScreen(
         if (deletedThreads.isEmpty() && deletedMessages.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = "No deleted threads or messages",
+                    text = Translator.get("no_deleted_items"),
                     color = TextSecondary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp
@@ -3568,7 +3774,7 @@ fun DeletedThreadsScreen(
                 if (deletedThreads.isNotEmpty()) {
                     item {
                         Text(
-                            text = "DELETED THREADS",
+                            text = Translator.get("deleted_threads"),
                             color = TextSecondary,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
@@ -3588,7 +3794,7 @@ fun DeletedThreadsScreen(
                             },
                             onDelete = {
                                 // Permanently delete
-                                deleteThread(context, thread.threadId)
+                                permanentlyDeleteThread(context, thread.threadId)
                                 deleteManager.restoreThread(thread.threadId)
                                 onRefresh()
                             }
@@ -3599,7 +3805,7 @@ fun DeletedThreadsScreen(
                 if (deletedMessages.isNotEmpty()) {
                     item {
                         Text(
-                            text = "DELETED MESSAGES",
+                            text = Translator.get("deleted_messages"),
                             color = TextSecondary,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
@@ -3800,7 +4006,7 @@ fun DeletedMessageListItem(
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "RESTORE",
+                        text = Translator.get("restore"),
                         fontSize = 8.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,

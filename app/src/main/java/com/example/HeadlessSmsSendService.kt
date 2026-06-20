@@ -1,11 +1,13 @@
 package com.example
 
 import android.app.Service
+import android.content.ContentValues
 import android.content.Intent
-import android.os.IBinder
-import android.telephony.SmsManager
 import android.net.Uri
 import android.os.Build
+import android.os.IBinder
+import android.provider.Telephony
+import android.telephony.SmsManager
 
 class HeadlessSmsSendService : Service() {
     override fun onBind(intent: Intent): IBinder? {
@@ -28,7 +30,23 @@ class HeadlessSmsSendService : Service() {
                         @Suppress("DEPRECATION")
                         SmsManager.getDefault()
                     }
-                    smsManager.sendTextMessage(number, null, message, null, null)
+                    
+                    val parts = smsManager.divideMessage(message)
+                    if (parts.size == 1) {
+                        smsManager.sendTextMessage(number, null, message, null, null)
+                    } else {
+                        smsManager.sendMultipartTextMessage(number, null, parts, null, null)
+                    }
+
+                    // Write to Sent content provider
+                    val values = ContentValues().apply {
+                        put(Telephony.Sms.ADDRESS, number)
+                        put(Telephony.Sms.BODY, message)
+                        put(Telephony.Sms.DATE, System.currentTimeMillis())
+                        put(Telephony.Sms.READ, 1)
+                        put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+                    }
+                    contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }

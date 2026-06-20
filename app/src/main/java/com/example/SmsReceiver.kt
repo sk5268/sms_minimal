@@ -17,7 +17,14 @@ class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         const val CHANNEL_ID = "sms_receiver_channel"
-        private var notificationIdCounter = 1000
+        
+        fun getNextNotificationId(context: Context): Int {
+            val prefs = context.getSharedPreferences("notification_prefs", Context.MODE_PRIVATE)
+            val currentId = prefs.getInt("counter", 1000)
+            val nextId = if (currentId >= 999999) 1000 else currentId + 3
+            prefs.edit().putInt("counter", nextId).apply()
+            return currentId
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -48,7 +55,7 @@ class SmsReceiver : BroadcastReceiver() {
 
         val smsUriString = insertedUri?.toString() ?: ""
 
-        // 2. Intelligent OTP extraction
+        // 2. OTP extraction
         val otp = extractOTP(body)
 
         val messageId = insertedUri?.let { uri ->
@@ -103,12 +110,21 @@ class SmsReceiver : BroadcastReceiver() {
 
     private fun extractOTP(body: String): String? {
         val lowercaseBody = body.lowercase()
-        // Broad list of common dynamic codes and secure keywords in 2026
-        val keywords = listOf("otp", "code", "pin", "verification", "passcode", "one-time", "secure", "confirm", "login", "vcode", "2fa")
-        val hasKeyword = keywords.any { lowercaseBody.contains(it) }
+        // Conservative keywords — only flag when SMS is clearly an OTP.
+        // False negatives (missed OTP) are fine — message just won't auto-delete.
+        val keywords = listOf("otp", "time password", "time pin", "code")
+        var hasKeyword = keywords.any { lowercaseBody.contains(it) }
+        
+        // Refinement: If it only matched "code", filter out common false positives like "zip code", "promo code"
+        if (hasKeyword && !lowercaseBody.contains("otp") && !lowercaseBody.contains("time password") && !lowercaseBody.contains("time pin")) {
+            val falsePositives = listOf("zip code", "promo code", "postal code", "error code", "discount code", "coupon code", "bar code", "qr code", "booking code", "pin code")
+            if (falsePositives.any { lowercaseBody.contains(it) }) {
+                hasKeyword = false
+            }
+        }
         if (!hasKeyword) return null
 
-        // Match numeric Sequences of 4 to 8 digits
+        // Match numeric sequences of 4 to 8 digits
         val digitPattern = Regex("\\b\\d{4,8}\\b")
         val matches = digitPattern.findAll(body).map { it.value }.toList()
         if (matches.isNotEmpty()) {
@@ -117,7 +133,7 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         // Alphanumeric fallback patterns like "code is XJ432" or "code: Y7U9"
-        val alphaPattern = Regex("(?i)\\b(?:code|otp|pin|is)\\s*[:= ]\\s*([a-zA-Z0-9]{4,8})\\b")
+        val alphaPattern = Regex("(?i)\\b(?:code|otp)\\s*[:= ]\\s*([a-zA-Z0-9]{4,8})\\b")
         val alphaMatch = alphaPattern.find(body)
         if (alphaMatch != null) {
             val candidate = alphaMatch.groupValues[1]
@@ -180,7 +196,7 @@ class SmsReceiver : BroadcastReceiver() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        val notifId = notificationIdCounter++
+        val notifId = getNextNotificationId(context)
 
         // Create intent to open application main layout
         val mainIntent = Intent(context, MainActivity::class.java).apply {
@@ -238,7 +254,7 @@ class SmsReceiver : BroadcastReceiver() {
             val deletePendingIntent = PendingIntent.getBroadcast(context, notifId + 2, deleteIntent, actionFlags)
             builder.addAction(
                 0, // 0 handles platform-native minimalist styling
-                "DELETE MESSAGE",
+                Translator.get("delete_message_action"),
                 deletePendingIntent
             )
         }
