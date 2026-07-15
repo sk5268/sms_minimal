@@ -40,11 +40,22 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 if (!uriString.isNullOrEmpty()) {
                     try {
                         val uri = Uri.parse(uriString)
-                        val deletedRows = context.contentResolver.delete(uri, null, null)
-                        if (deletedRows > 0) {
+                        val messageId = try {
+                            android.content.ContentUris.parseId(uri)
+                        } catch (e: Exception) {
+                            uri.lastPathSegment?.toLongOrNull()
+                        }
+                        if (messageId != null) {
+                            val deleteManager = DeleteManager(context)
+                            deleteManager.softDeleteMessage(messageId)
                             Toast.makeText(context, Translator.get("sms_deleted"), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, Translator.get("clear_from_provider"), Toast.LENGTH_SHORT).show()
+                            val deletedRows = context.contentResolver.delete(uri, null, null)
+                            if (deletedRows > 0) {
+                                Toast.makeText(context, Translator.get("sms_deleted"), Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, Translator.get("clear_from_provider"), Toast.LENGTH_SHORT).show()
+                            }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
