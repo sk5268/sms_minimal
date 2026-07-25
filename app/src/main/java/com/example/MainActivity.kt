@@ -86,7 +86,11 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.withLink
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import kotlin.math.roundToInt
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -2099,51 +2103,122 @@ fun MessageBubbleItem(
 
 @Composable
 fun LinkableText(text: String, modifier: Modifier = Modifier, fontSizeMultiplier: Float = 1.0f) {
+    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    // Pure fast regex for matching standard link protocols in 2026
-    val urlPattern = Regex("(https?://[\\w-]+(\\.[\\w-]+)+(:\\d+)?(/[^\\s]*)?)")
 
-    val annotatedString = buildAnnotatedString {
-        var lastIndex = 0
-        urlPattern.findAll(text).forEach { matchResult ->
-            val start = matchResult.range.first
-            val end = matchResult.range.last + 1
+    val matches = remember(text) {
+        val list = mutableListOf<Triple<IntRange, String, String>>()
+        val matcher = android.util.Patterns.WEB_URL.matcher(text)
+        while (matcher.find()) {
+            val start = matcher.start()
+            val end = matcher.end()
+            val rawUrl = matcher.group() ?: continue
 
-            if (start > lastIndex) {
-                append(text.substring(lastIndex, start))
+            var url = rawUrl
+            var actualEnd = end
+            val trailingPunct = charArrayOf('.', ',', '!', '?', ';', ':', ')', ']', '}')
+            while (url.isNotEmpty() && url.last() in trailingPunct) {
+                if (url.last() == ')' && url.count { it == '(' } == url.count { it == ')' }) {
+                    break
+                }
+                url = url.substring(0, url.length - 1)
+                actualEnd--
             }
 
-            val url = matchResult.value
-            pushStringAnnotation(tag = "URL", annotation = url)
-            withLink(
-                LinkAnnotation.Url(
-                    url = url,
-                    linkInteractionListener = {
-                        try {
-                            uriHandler.openUri(url)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+            if (url.isNotEmpty()) {
+                val targetUrl = if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+                    url
+                } else {
+                    "https://$url"
+                }
+                list.add(Triple(start until actualEnd, url, targetUrl))
+            }
+        }
+        list
+    }
+
+    val annotatedString = remember(text, matches) {
+        buildAnnotatedString {
+            var lastIndex = 0
+            for ((range, displayUrl, targetUrl) in matches) {
+                if (range.first > lastIndex) {
+                    append(text.substring(lastIndex, range.first))
+                }
+
+                pushStringAnnotation(tag = "URL", annotation = targetUrl)
+                withLink(
+                    LinkAnnotation.Url(
+                        url = targetUrl,
+                        linkInteractionListener = {
+                            try {
+                                uriHandler.openUri(targetUrl)
+                            } catch (e: Exception) {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (ex: Exception) {
+                                    ex.printStackTrace()
+                                }
+                            }
                         }
-                    }
-                )
-            ) {
-                withStyle(
-                    style = SpanStyle(
-                        color = AccentBlue,
-                        textDecoration = TextDecoration.Underline
                     )
                 ) {
-                    append(url)
+                    withStyle(
+                        style = SpanStyle(
+                            color = AccentBlue,
+                            textDecoration = TextDecoration.Underline,
+                            fontWeight = FontWeight.Medium
+                        )
+                    ) {
+                        append(displayUrl)
+                    }
+                }
+                pop()
+
+                lastIndex = range.last + 1
+            }
+
+            if (lastIndex < text.length) {
+                append(text.substring(lastIndex))
+            }
+        }
+    }
+
+    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+
+    val linkModifier = if (matches.isNotEmpty()) {
+        modifier.pointerInput(annotatedString) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val up = waitForUpOrCancellation()
+                if (up != null) {
+                    layoutResult?.let { layout ->
+                        val offset = layout.getOffsetForPosition(up.position)
+                        val urlAnnotation = annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset).firstOrNull()
+                        if (urlAnnotation != null) {
+                            up.consume()
+                            val targetUrl = urlAnnotation.item
+                            try {
+                                uriHandler.openUri(targetUrl)
+                            } catch (e: Exception) {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (ex: Exception) {
+                                    ex.printStackTrace()
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            pop()
-
-            lastIndex = end
         }
-
-        if (lastIndex < text.length) {
-            append(text.substring(lastIndex))
-        }
+    } else {
+        modifier
     }
 
     Text(
@@ -2154,7 +2229,8 @@ fun LinkableText(text: String, modifier: Modifier = Modifier, fontSizeMultiplier
             fontFamily = FontFamily.Monospace,
             lineHeight = (19 * fontSizeMultiplier).sp
         ),
-        modifier = modifier
+        onTextLayout = { layoutResult = it },
+        modifier = linkModifier
     )
 }
 
