@@ -14,9 +14,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_COPY_OTP = "com.example.ACTION_COPY_OTP"
         const val ACTION_DELETE_SMS = "com.example.ACTION_DELETE_SMS"
+        const val ACTION_DISMISS = "com.example.ACTION_DISMISS"
         const val EXTRA_OTP = "com.example.EXTRA_OTP"
         const val EXTRA_SMS_URI = "com.example.EXTRA_SMS_URI"
         const val EXTRA_NOTIF_ID = "com.example.EXTRA_NOTIF_ID"
+        const val EXTRA_SENDER = "com.example.EXTRA_SENDER"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -63,6 +65,12 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     }
                 }
                 cancelNotification(context, notifId)
+            }
+            ACTION_DISMISS -> {
+                val sender = intent.getStringExtra(EXTRA_SENDER)
+                if (!sender.isNullOrEmpty()) {
+                    SmsReceiver.clearSenderMessages(context, sender)
+                }
             }
         }
     }

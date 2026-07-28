@@ -17,13 +17,54 @@ class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         const val CHANNEL_ID = "sms_receiver_channel"
+        private const val PREFS_NAME = "notification_prefs"
         
         fun getNextNotificationId(context: Context): Int {
-            val prefs = context.getSharedPreferences("notification_prefs", Context.MODE_PRIVATE)
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val currentId = prefs.getInt("counter", 1000)
             val nextId = if (currentId >= 999999) 1000 else currentId + 3
             prefs.edit().putInt("counter", nextId).apply()
             return currentId
+        }
+
+        fun getNotificationIdForSender(context: Context, sender: String): Int {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val key = "notif_id_$sender"
+            if (prefs.contains(key)) {
+                return prefs.getInt(key, 1000)
+            }
+            val newId = getNextNotificationId(context)
+            prefs.edit().putInt(key, newId).apply()
+            return newId
+        }
+
+        fun storeAndGetSenderMessages(context: Context, sender: String, newBody: String): List<String> {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val key = "messages_$sender"
+            val jsonString = prefs.getString(key, null)
+            val list = mutableListOf<String>()
+            if (!jsonString.isNullOrEmpty()) {
+                try {
+                    val array = org.json.JSONArray(jsonString)
+                    for (i in 0 until array.length()) {
+                        list.add(array.getString(i))
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            list.add(newBody)
+            val newArray = org.json.JSONArray(list)
+            prefs.edit().putString(key, newArray.toString()).apply()
+            return list
+        }
+
+        fun clearSenderMessages(context: Context, sender: String) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
+                .remove("messages_$sender")
+                .remove("notif_id_$sender")
+                .apply()
         }
     }
 
@@ -196,7 +237,9 @@ class SmsReceiver : BroadcastReceiver() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        val notifId = getNextNotificationId(context)
+        val notifId = getNotificationIdForSender(context, sender)
+        val allMessages = storeAndGetSenderMessages(context, sender, body)
+        val combinedText = allMessages.joinToString("\n")
 
         // Create intent to open application main layout
         val mainIntent = Intent(context, MainActivity::class.java).apply {
@@ -210,16 +253,35 @@ class SmsReceiver : BroadcastReceiver() {
         }
         val mainPendingIntent = PendingIntent.getActivity(context, notifId, mainIntent, mainPendingFlags)
 
-        val truncatedBody = if (body.length > 300) body.take(300) else body
+        // Set up delete / dismiss intent when user clears or dismisses notification
+        val dismissIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_DISMISS
+            putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
+        }
+        val dismissPendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val dismissPendingIntent = PendingIntent.getBroadcast(context, notifId + 3, dismissIntent, dismissPendingFlags)
+
+        val truncatedCombinedText = if (combinedText.length > 1000) combinedText.take(1000) else combinedText
+
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle(displayName)
+        for (msg in allMessages) {
+            inboxStyle.addLine(msg)
+        }
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_chat)
             .setContentTitle(displayName)
-            .setContentText(truncatedBody)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(truncatedBody))
+            .setContentText(allMessages.lastOrNull() ?: "")
+            .setStyle(inboxStyle)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(mainPendingIntent)
+            .setDeleteIntent(dismissPendingIntent)
             .setAutoCancel(true)
             .setAllowSystemGeneratedContextualActions(false)
 
