@@ -1866,25 +1866,51 @@ fun ConversationScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(top = 20.dp, bottom = 24.dp)
         ) {
-            items(messages, key = { it.id }) { message ->
+            // Group items or insert Day Headers
+            var previousDateKey = ""
+            messages.forEachIndexed { index, message ->
+                val dateKey = formatDayHeaderDate(message.timestamp)
+                if (dateKey != previousDateKey) {
+                    previousDateKey = dateKey
+                    item(key = "header_$dateKey") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = dateKey,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = TextSecondary,
+                                letterSpacing = 1.sp
+                            )
+                        }
+                    }
+                }
+
                 val isSelected = selectedMessageIds.contains(message.id)
                 val isStarred = starredIds.contains(message.id)
-                MessageBubbleItem(
-                    message = message,
-                    isSelected = isSelected,
-                    isStarred = isStarred,
-                    isInSelectionMode = inSelectionMode,
-                    onToggleSelection = { onToggleMessageSelection(message.id) },
-                    onTripleTapDelete = {
-                        if (archiveManager.shouldSkipThreadDeleteWarning()) {
-                            onDeleteMessages(listOf(message.id))
-                        } else {
-                            messageToDeleteByTripleTap = message
-                        }
-                    },
-                    onDoubleTapStar = { onToggleStar(message.id) },
-                    fontSizeMultiplier = fontSizeMultiplier
-                )
+                item(key = message.id) {
+                    MessageBubbleItem(
+                        message = message,
+                        isSelected = isSelected,
+                        isStarred = isStarred,
+                        isInSelectionMode = inSelectionMode,
+                        onToggleSelection = { onToggleMessageSelection(message.id) },
+                        onTripleTapDelete = {
+                            if (archiveManager.shouldSkipThreadDeleteWarning()) {
+                                onDeleteMessages(listOf(message.id))
+                            } else {
+                                messageToDeleteByTripleTap = message
+                            }
+                        },
+                        onDoubleTapStar = { onToggleStar(message.id) },
+                        fontSizeMultiplier = fontSizeMultiplier
+                    )
+                }
             }
         }
 
@@ -1977,34 +2003,22 @@ fun MessageBubbleItem(
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var tapCount by remember { mutableIntStateOf(0) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth(),
-        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (isInSelectionMode) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Selection Status Indicator",
-                    tint = if (isSelected) Color(0xFF00E5FF) else Color(0xFF232630),
-                    modifier = Modifier
-                        .size(16.dp)
-                        .clickable { onToggleSelection() }
-                )
-            }
-            Text(
-                text = formatMinimalTimestamp(message.timestamp),
-                fontSize = 8.sp,
-                fontFamily = FontFamily.Monospace,
-                color = TextSecondary
+        if (isInSelectionMode) {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = "Selection Status Indicator",
+                tint = if (isSelected) Color(0xFF00E5FF) else Color(0xFF232630),
+                modifier = Modifier
+                    .size(18.dp)
+                    .clickable { onToggleSelection() }
+                    .padding(end = 6.dp)
             )
         }
-        Spacer(modifier = Modifier.height(4.dp))
         
         val bubbleGradient = if (isMe) {
             Brush.linearGradient(
@@ -2077,23 +2091,32 @@ fun MessageBubbleItem(
                         bottomEnd = if (isMe) 4.dp else 16.dp
                     )
                 )
-                .padding(14.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            Box {
-                // Add bottom-right padding only when starred to keep star from clipping text
+            Column {
                 LinkableText(
                     text = message.body,
-                    fontSizeMultiplier = fontSizeMultiplier,
-                    modifier = if (isStarred) Modifier.padding(end = 16.dp, bottom = 14.dp) else Modifier
+                    fontSizeMultiplier = fontSizeMultiplier
                 )
-                if (isStarred) {
-                    Icon(
-                        imageVector = Icons.Default.Star,
-                        contentDescription = "Starred",
-                        tint = Color(0xFFFFD700),
-                        modifier = Modifier
-                            .size(12.dp)
-                            .align(Alignment.BottomEnd)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (isStarred) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Starred",
+                            tint = Color(0xFFFFD700),
+                            modifier = Modifier.size(10.dp)
+                        )
+                    }
+                    Text(
+                        text = formatMessageTime(message.timestamp),
+                        fontSize = 8.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (isMe) PureWhite.copy(alpha = 0.7f) else TextSecondary.copy(alpha = 0.7f)
                     )
                 }
             }
@@ -2841,6 +2864,30 @@ private fun sendMessage(context: Context, number: String, body: String) {
         Toast.makeText(context, "Send failed: ${e.message}", Toast.LENGTH_SHORT).show()
         e.printStackTrace()
     }
+}
+
+private fun formatDayHeaderDate(milliSeconds: Long): String {
+    val messageCal = java.util.Calendar.getInstance().apply { timeInMillis = milliSeconds }
+    val nowCal = java.util.Calendar.getInstance()
+
+    val isSameYear = messageCal.get(java.util.Calendar.YEAR) == nowCal.get(java.util.Calendar.YEAR)
+    val isSameDay = isSameYear && messageCal.get(java.util.Calendar.DAY_OF_YEAR) == nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+
+    if (isSameDay) return "Today"
+
+    val yesterdayCal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR, -1) }
+    val isYesterday = yesterdayCal.get(java.util.Calendar.YEAR) == messageCal.get(java.util.Calendar.YEAR) &&
+            yesterdayCal.get(java.util.Calendar.DAY_OF_YEAR) == messageCal.get(java.util.Calendar.DAY_OF_YEAR)
+
+    if (isYesterday) return "Yesterday"
+
+    val format = java.text.SimpleDateFormat("dd MMMM", java.util.Locale.US)
+    return format.format(messageCal.time)
+}
+
+private fun formatMessageTime(milliSeconds: Long): String {
+    val format = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.US)
+    return format.format(java.util.Date(milliSeconds))
 }
 
 private fun formatMinimalTimestamp(milliSeconds: Long): String {
