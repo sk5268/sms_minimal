@@ -93,6 +93,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import kotlin.math.roundToInt
 import com.example.ui.theme.*
+import com.example.finance.FinanceScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalDensity
@@ -410,6 +411,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var activeThread by remember { mutableStateOf<SmsThread?>(null) }
     var isNewMessageOpen by remember { mutableStateOf(false) }
     var isDeletedFolderOpen by remember { mutableStateOf(false) }
+    var isStarredFolderOpen by remember { mutableStateOf(false) }
     var selectedMessageIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var scrollToMessageId by remember { mutableStateOf<Long?>(null) }
 
@@ -418,7 +420,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var activeMessages by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
     var starredMessages by remember { mutableStateOf<List<Pair<SmsMessage, String>>>(emptyList()) }
     var refreshCounter by remember { mutableIntStateOf(0) }
-    var activeTab by remember { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or STARRED
+    var activeTab by remember { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or FINANCE
 
     // Swipe to delete thread states
     // Removed legacy threadToDelete state (now handled via soft deletion)
@@ -428,7 +430,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var newMessageText by remember { mutableStateOf("") }
     var chatMessageText by remember { mutableStateOf("") }
 
-    BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen || selectedMessageIds.isNotEmpty()) {
+    BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen || isStarredFolderOpen || selectedMessageIds.isNotEmpty()) {
         if (selectedMessageIds.isNotEmpty()) {
             selectedMessageIds = emptySet()
         } else if (activeThread != null) {
@@ -444,6 +446,8 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
         } else if (isDeletedFolderOpen) {
             isDeletedFolderOpen = false
             refreshCounter++
+        } else if (isStarredFolderOpen) {
+            isStarredFolderOpen = false
         }
     }
 
@@ -814,6 +818,19 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         refreshCounter++
                     }
                 )
+            } else if (isStarredFolderOpen) {
+                StarredMessagesScreen(
+                    starredMessages = starredMessages,
+                    onBack = { isStarredFolderOpen = false },
+                    onStarredMessageSelect = { threadId, messageId ->
+                        val thread = threads.find { it.threadId == threadId }
+                        if (thread != null) {
+                            isStarredFolderOpen = false
+                            scrollToMessageId = messageId
+                            activeThread = thread
+                        }
+                    }
+                )
             } else {
                 // MAIN THREADS INBOX / ARCHIVAL SCREEN
                 MainThreadsScreen(
@@ -844,6 +861,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         refreshCounter++
                     },
                     onOpenDeletedFolder = { isDeletedFolderOpen = true },
+                    onOpenStarredFolder = { isStarredFolderOpen = true },
                     onComposeClick = { isNewMessageOpen = true }
                 )
             }
@@ -862,6 +880,7 @@ fun MainThreadsScreen(
     onArchiveToggle: (SmsThread) -> Unit,
     onThreadDelete: (SmsThread) -> Unit,
     onOpenDeletedFolder: () -> Unit,
+    onOpenStarredFolder: () -> Unit,
     onComposeClick: () -> Unit
 ) {
     val pagerState = rememberPagerState(initialPage = when (activeTab) {
@@ -875,7 +894,7 @@ fun MainThreadsScreen(
         val tab = when (pagerState.currentPage) {
             0 -> "INBOX"
             1 -> "ARCHIVE"
-            else -> "STARRED"
+            else -> "FINANCE"
         }
         if (tab != activeTab) {
             onTabChange(tab)
@@ -949,7 +968,7 @@ fun MainThreadsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf("INBOX", "ARCHIVE", "STARRED").forEach { tab ->
+                        listOf("INBOX", "ARCHIVE", "FINANCE").forEach { tab ->
                             val selected = (tab == activeTab)
                             Box(
                                 modifier = Modifier
@@ -968,7 +987,7 @@ fun MainThreadsScreen(
                                     val text = when (tab) {
                                         "INBOX" -> Translator.get("inbox_tab")
                                         "ARCHIVE" -> Translator.get("archive_tab")
-                                        else -> Translator.get("starred_tab")
+                                        else -> Translator.get("finance_tab")
                                     }
                                     Text(
                                         text = text,
@@ -1021,6 +1040,20 @@ fun MainThreadsScreen(
                                 onOpenDeletedFolder()
                             }
                         )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    Translator.get("starred_menu"),
+                                    color = TextPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            onClick = {
+                                expanded = false
+                                onOpenStarredFolder()
+                            }
+                        )
                     }
                 }
             }
@@ -1044,50 +1077,7 @@ fun MainThreadsScreen(
                     .weight(1f)
             ) { page ->
                 if (page == 2) {
-                    if (starredMessages.isEmpty()) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
-                                modifier = Modifier.padding(32.dp)
-                            ) {
-                                Text(
-                                    text = Translator.get("no_starred_messages"),
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextSecondary,
-                                    letterSpacing = 1.5.sp
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = Translator.get("no_starred_desc"),
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = TextSecondary.copy(alpha = 0.6f),
-                                    letterSpacing = 0.5.sp,
-                                    lineHeight = 15.sp,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                            }
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp)
-                        ) {
-                            items(starredMessages, key = { it.first.id }) { (msg, name) ->
-                                StarredMessageListItem(
-                                    message = msg,
-                                    name = name,
-                                    onSelect = { onStarredMessageSelect(msg.threadId, msg.id) }
-                                )
-                            }
-                        }
-                    }
+                    FinanceScreen()
                 } else {
                     val listThreads = if (page == 0) {
                         threads.filter { !it.isArchived }
@@ -3190,7 +3180,31 @@ object Translator {
             "send_failed_to" to "Failed to send SMS to %s",
             "message_failed" to "Message Failed",
             "mms_received_title" to "MMS Message",
-            "mms_received_body" to "MMS or Group Message received (unsupported)"
+            "mms_received_body" to "MMS or Group Message received (unsupported)",
+            "finance_tab" to "FINANCE",
+            "starred_menu" to "Starred",
+            "categorize_action" to "Categorize",
+            "dont_track_action" to "Don't Track",
+            "uncategorized" to "Uncategorized",
+            "finance_this_month" to "This month",
+            "finance_daily_avg" to "Daily avg",
+            "finance_weekly_avg" to "Weekly avg",
+            "finance_monthly_avg" to "Monthly avg",
+            "finance_overall" to "Overall avg",
+            "finance_needs_attention" to "Needs attention",
+            "finance_recent" to "Recent debits",
+            "finance_manage_categories" to "Manage categories",
+            "finance_scan_inbox" to "Scan inbox",
+            "finance_no_debits" to "No debits yet",
+            "finance_no_debits_desc" to "Debit SMS will auto-log here. Scan inbox for history.",
+            "finance_add_category" to "Add category",
+            "finance_logged_as" to "Logged · %s",
+            "finance_dont_track_done" to "Removed from finance",
+            "finance_scan_done" to "Added %d debits",
+            "finance_scanning" to "Scanning…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Category heat",
+            "overlay_permission_needed" to "Grant overlay permission to categorize from notifications"
         ),
         "es" to mapOf(
             "delete_thread" to "¿ELIMINAR HILO?",
@@ -3250,7 +3264,31 @@ object Translator {
             "send_failed_to" to "Error al enviar SMS a %s",
             "message_failed" to "Mensaje fallido",
             "mms_received_title" to "Mensaje MMS",
-            "mms_received_body" to "Mensaje MMS o de grupo recibido (no compatible)"
+            "mms_received_body" to "Mensaje MMS o de grupo recibido (no compatible)",
+            "finance_tab" to "FINANZAS",
+            "starred_menu" to "Destacados",
+            "categorize_action" to "Categorizar",
+            "dont_track_action" to "No rastrear",
+            "uncategorized" to "Sin categoría",
+            "finance_this_month" to "Este mes",
+            "finance_daily_avg" to "Prom. diario",
+            "finance_weekly_avg" to "Prom. semanal",
+            "finance_monthly_avg" to "Prom. mensual",
+            "finance_overall" to "Prom. total",
+            "finance_needs_attention" to "Requiere atención",
+            "finance_recent" to "Débitos recientes",
+            "finance_manage_categories" to "Gestionar categorías",
+            "finance_scan_inbox" to "Escanear bandeja",
+            "finance_no_debits" to "Sin débitos aún",
+            "finance_no_debits_desc" to "Los SMS de débito se registrarán aquí. Escanea la bandeja para el historial.",
+            "finance_add_category" to "Añadir categoría",
+            "finance_logged_as" to "Registrado · %s",
+            "finance_dont_track_done" to "Eliminado de finanzas",
+            "finance_scan_done" to "Se añadieron %d débitos",
+            "finance_scanning" to "Escaneando…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Gasto por categoría",
+            "overlay_permission_needed" to "Concede permiso de superposición para categorizar desde notificaciones"
         ),
         "fr" to mapOf(
             "delete_thread" to "SUPPRIMER LE FIL?",
@@ -3310,7 +3348,31 @@ object Translator {
             "send_failed_to" to "Échec de l'envoi du SMS à %s",
             "message_failed" to "Échec du message",
             "mms_received_title" to "Message MMS",
-            "mms_received_body" to "MMS ou message de groupe reçu (non supporté)"
+            "mms_received_body" to "MMS ou message de groupe reçu (non supporté)",
+            "finance_tab" to "FINANCES",
+            "starred_menu" to "Favoris",
+            "categorize_action" to "Catégoriser",
+            "dont_track_action" to "Ne pas suivre",
+            "uncategorized" to "Non classé",
+            "finance_this_month" to "Ce mois",
+            "finance_daily_avg" to "Moy. jour",
+            "finance_weekly_avg" to "Moy. semaine",
+            "finance_monthly_avg" to "Moy. mois",
+            "finance_overall" to "Moy. globale",
+            "finance_needs_attention" to "À classer",
+            "finance_recent" to "Débits récents",
+            "finance_manage_categories" to "Gérer catégories",
+            "finance_scan_inbox" to "Scanner la boîte",
+            "finance_no_debits" to "Aucun débit",
+            "finance_no_debits_desc" to "Les SMS de débit s'enregistrent ici. Scannez la boîte pour l'historique.",
+            "finance_add_category" to "Ajouter catégorie",
+            "finance_logged_as" to "Enregistré · %s",
+            "finance_dont_track_done" to "Retiré des finances",
+            "finance_scan_done" to "%d débits ajoutés",
+            "finance_scanning" to "Scan…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Répartition",
+            "overlay_permission_needed" to "Autorisez la superposition pour catégoriser depuis les notifications"
         ),
         "de" to mapOf(
             "delete_thread" to "THREAD LÖSCHEN?",
@@ -3370,7 +3432,31 @@ object Translator {
             "send_failed_to" to "SMS an %s konnte nicht gesendet werden",
             "message_failed" to "Nachricht fehlgeschlagen",
             "mms_received_title" to "MMS-Nachricht",
-            "mms_received_body" to "MMS oder Gruppenachricht empfangen (nicht unterstützt)"
+            "mms_received_body" to "MMS oder Gruppenachricht empfangen (nicht unterstützt)",
+            "finance_tab" to "FINANZEN",
+            "starred_menu" to "Markiert",
+            "categorize_action" to "Kategorisieren",
+            "dont_track_action" to "Nicht verfolgen",
+            "uncategorized" to "Unkategorisiert",
+            "finance_this_month" to "Dieser Monat",
+            "finance_daily_avg" to "Tages-Ø",
+            "finance_weekly_avg" to "Wochen-Ø",
+            "finance_monthly_avg" to "Monats-Ø",
+            "finance_overall" to "Gesamt-Ø",
+            "finance_needs_attention" to "Zu kategorisieren",
+            "finance_recent" to "Letzte Abbuchungen",
+            "finance_manage_categories" to "Kategorien verwalten",
+            "finance_scan_inbox" to "Posteingang scannen",
+            "finance_no_debits" to "Noch keine Abbuchungen",
+            "finance_no_debits_desc" to "Debit-SMS werden hier automatisch erfasst. Posteingang für Verlauf scannen.",
+            "finance_add_category" to "Kategorie hinzufügen",
+            "finance_logged_as" to "Erfasst · %s",
+            "finance_dont_track_done" to "Aus Finanzen entfernt",
+            "finance_scan_done" to "%d Abbuchungen hinzugefügt",
+            "finance_scanning" to "Scanne…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Kategorien",
+            "overlay_permission_needed" to "Overlay-Berechtigung für Kategorisierung aus Benachrichtigungen erteilen"
         ),
         "zh" to mapOf(
             "delete_thread" to "删除会话？",
@@ -3430,7 +3516,31 @@ object Translator {
             "send_failed_to" to "向 %s 发送短信失败",
             "message_failed" to "发送失败",
             "mms_received_title" to "MMS短信",
-            "mms_received_body" to "收到MMS或群组短信（不支持）"
+            "mms_received_body" to "收到MMS或群组短信（不支持）",
+            "finance_tab" to "财务",
+            "starred_menu" to "星标",
+            "categorize_action" to "分类",
+            "dont_track_action" to "不跟踪",
+            "uncategorized" to "未分类",
+            "finance_this_month" to "本月",
+            "finance_daily_avg" to "日均",
+            "finance_weekly_avg" to "周均",
+            "finance_monthly_avg" to "月均",
+            "finance_overall" to "总均",
+            "finance_needs_attention" to "待分类",
+            "finance_recent" to "最近支出",
+            "finance_manage_categories" to "管理分类",
+            "finance_scan_inbox" to "扫描收件箱",
+            "finance_no_debits" to "暂无支出",
+            "finance_no_debits_desc" to "借记短信将自动记录。扫描收件箱查看历史。",
+            "finance_add_category" to "添加分类",
+            "finance_logged_as" to "已记录 · %s",
+            "finance_dont_track_done" to "已从财务中移除",
+            "finance_scan_done" to "已添加 %d 条支出",
+            "finance_scanning" to "扫描中…",
+            "finance_auto_badge" to "自动",
+            "finance_category_heat" to "分类统计",
+            "overlay_permission_needed" to "请授予悬浮窗权限以便从通知分类"
         ),
         "ja" to mapOf(
             "delete_thread" to "スレッドを削除しますか？",
@@ -3490,7 +3600,31 @@ object Translator {
             "send_failed_to" to "%s へのSMS送信に失敗しました",
             "message_failed" to "送信失敗",
             "mms_received_title" to "MMSメッセージ",
-            "mms_received_body" to "MMSまたはグループメッセージを受信しました（未対応）"
+            "mms_received_body" to "MMSまたはグループメッセージを受信しました（未対応）",
+            "finance_tab" to "財務",
+            "starred_menu" to "スター",
+            "categorize_action" to "分類",
+            "dont_track_action" to "追跡しない",
+            "uncategorized" to "未分類",
+            "finance_this_month" to "今月",
+            "finance_daily_avg" to "日平均",
+            "finance_weekly_avg" to "週平均",
+            "finance_monthly_avg" to "月平均",
+            "finance_overall" to "全体平均",
+            "finance_needs_attention" to "要分類",
+            "finance_recent" to "最近の出金",
+            "finance_manage_categories" to "カテゴリ管理",
+            "finance_scan_inbox" to "受信トレイをスキャン",
+            "finance_no_debits" to "出金なし",
+            "finance_no_debits_desc" to "デビットSMSは自動記録されます。履歴は受信トレイをスキャン。",
+            "finance_add_category" to "カテゴリ追加",
+            "finance_logged_as" to "記録 · %s",
+            "finance_dont_track_done" to "財務から削除しました",
+            "finance_scan_done" to "%d 件追加",
+            "finance_scanning" to "スキャン中…",
+            "finance_auto_badge" to "自動",
+            "finance_category_heat" to "カテゴリ別",
+            "overlay_permission_needed" to "通知から分類するにはオーバーレイ権限が必要です"
         ),
         "hi" to mapOf(
             "delete_thread" to "थ्रेड हटाएं?",
@@ -3550,7 +3684,31 @@ object Translator {
             "send_failed_to" to "%s को एसएमएस भेजने में विफल",
             "message_failed" to "संदेश विफल",
             "mms_received_title" to "एमएमएस संदेश",
-            "mms_received_body" to "एमएमएस या समूह संदेश प्राप्त हुआ (असमर्थित)"
+            "mms_received_body" to "एमएमएस या समूह संदेश प्राप्त हुआ (असमर्थित)",
+            "finance_tab" to "वित्त",
+            "starred_menu" to "स्टार",
+            "categorize_action" to "श्रेणी",
+            "dont_track_action" to "ट्रैक न करें",
+            "uncategorized" to "अवर्गीकृत",
+            "finance_this_month" to "इस महीने",
+            "finance_daily_avg" to "दैनिक औसत",
+            "finance_weekly_avg" to "साप्ताहिक औसत",
+            "finance_monthly_avg" to "मासिक औसत",
+            "finance_overall" to "कुल औसत",
+            "finance_needs_attention" to "ध्यान दें",
+            "finance_recent" to "हाल के डेबिट",
+            "finance_manage_categories" to "श्रेणियाँ प्रबंधित करें",
+            "finance_scan_inbox" to "इनबॉक्स स्कैन",
+            "finance_no_debits" to "अभी कोई डेबिट नहीं",
+            "finance_no_debits_desc" to "डेबिट SMS यहाँ ऑटो-लॉग होंगे। इतिहास के लिए इनबॉक्स स्कैन करें।",
+            "finance_add_category" to "श्रेणी जोड़ें",
+            "finance_logged_as" to "लॉग · %s",
+            "finance_dont_track_done" to "वित्त से हटाया",
+            "finance_scan_done" to "%d डेबिट जोड़े",
+            "finance_scanning" to "स्कैन…",
+            "finance_auto_badge" to "ऑटो",
+            "finance_category_heat" to "श्रेणी-wise",
+            "overlay_permission_needed" to "सूचना से श्रेणीबद्ध करने के लिए ओवरले अनुमति दें"
         ),
         "ar" to mapOf(
             "delete_thread" to "حذف المحادثة؟",
@@ -3610,7 +3768,31 @@ object Translator {
             "send_failed_to" to "فشل إرسال الرسالة إلى %s",
             "message_failed" to "فشل إرسال الرسالة",
             "mms_received_title" to "رسالة MMS",
-            "mms_received_body" to "تم استلام رسالة MMS أو رسالة جماعية (غير مدعومة)"
+            "mms_received_body" to "تم استلام رسالة MMS أو رسالة جماعية (غير مدعومة)",
+            "finance_tab" to "المالية",
+            "starred_menu" to "مميز",
+            "categorize_action" to "تصنيف",
+            "dont_track_action" to "عدم التتبع",
+            "uncategorized" to "غير مصنف",
+            "finance_this_month" to "هذا الشهر",
+            "finance_daily_avg" to "متوسط يومي",
+            "finance_weekly_avg" to "متوسط أسبوعي",
+            "finance_monthly_avg" to "متوسط شهري",
+            "finance_overall" to "متوسط كلي",
+            "finance_needs_attention" to "يحتاج تصنيف",
+            "finance_recent" to "خصومات حديثة",
+            "finance_manage_categories" to "إدارة الفئات",
+            "finance_scan_inbox" to "مسح الوارد",
+            "finance_no_debits" to "لا خصومات بعد",
+            "finance_no_debits_desc" to "رسائل الخصم تُسجل تلقائياً. امسح الوارد للسجل.",
+            "finance_add_category" to "إضافة فئة",
+            "finance_logged_as" to "مسجل · %s",
+            "finance_dont_track_done" to "أُزيل من المالية",
+            "finance_scan_done" to "أُضيف %d خصم",
+            "finance_scanning" to "جارٍ المسح…",
+            "finance_auto_badge" to "تلقائي",
+            "finance_category_heat" to "حسب الفئة",
+            "overlay_permission_needed" to "امنح إذن التراكب للتصنيف من الإشعارات"
         ),
         "pt" to mapOf(
             "delete_thread" to "EXCLUIR CONVERSA?",
@@ -3670,7 +3852,31 @@ object Translator {
             "send_failed_to" to "Falha ao enviar SMS para %s",
             "message_failed" to "Falha na mensagem",
             "mms_received_title" to "Mensagem MMS",
-            "mms_received_body" to "MMS ou mensagem de grupo recebida (não suportada)"
+            "mms_received_body" to "MMS ou mensagem de grupo recebida (não suportada)",
+            "finance_tab" to "FINANÇAS",
+            "starred_menu" to "Favoritos",
+            "categorize_action" to "Categorizar",
+            "dont_track_action" to "Não rastrear",
+            "uncategorized" to "Sem categoria",
+            "finance_this_month" to "Este mês",
+            "finance_daily_avg" to "Média diária",
+            "finance_weekly_avg" to "Média semanal",
+            "finance_monthly_avg" to "Média mensal",
+            "finance_overall" to "Média geral",
+            "finance_needs_attention" to "Precisa atenção",
+            "finance_recent" to "Débitos recentes",
+            "finance_manage_categories" to "Gerir categorias",
+            "finance_scan_inbox" to "Escanear caixa",
+            "finance_no_debits" to "Sem débitos ainda",
+            "finance_no_debits_desc" to "SMS de débito são registados aqui. Escaneie a caixa para histórico.",
+            "finance_add_category" to "Adicionar categoria",
+            "finance_logged_as" to "Registado · %s",
+            "finance_dont_track_done" to "Removido das finanças",
+            "finance_scan_done" to "%d débitos adicionados",
+            "finance_scanning" to "A escanear…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Por categoria",
+            "overlay_permission_needed" to "Conceda permissão de sobreposição para categorizar nas notificações"
         ),
         "ru" to mapOf(
             "delete_thread" to "УДАЛИТЬ ДИАЛОГ?",
@@ -3730,7 +3936,31 @@ object Translator {
             "send_failed_to" to "Не удалось отправить SMS на %s",
             "message_failed" to "Ошибка отправки сообщения",
             "mms_received_title" to "MMS-сообщение",
-            "mms_received_body" to "Получено MMS или групповое сообщение (не поддерживается)"
+            "mms_received_body" to "Получено MMS или групповое сообщение (не поддерживается)",
+            "finance_tab" to "ФИНАНСЫ",
+            "starred_menu" to "Избранное",
+            "categorize_action" to "Категория",
+            "dont_track_action" to "Не отслеживать",
+            "uncategorized" to "Без категории",
+            "finance_this_month" to "Этот месяц",
+            "finance_daily_avg" to "Сред. день",
+            "finance_weekly_avg" to "Сред. неделя",
+            "finance_monthly_avg" to "Сред. месяц",
+            "finance_overall" to "Сред. общ.",
+            "finance_needs_attention" to "Нужна категория",
+            "finance_recent" to "Недавние списания",
+            "finance_manage_categories" to "Управление категориями",
+            "finance_scan_inbox" to "Сканировать входящие",
+            "finance_no_debits" to "Списаний пока нет",
+            "finance_no_debits_desc" to "SMS о списаниях записываются автоматически. Сканируйте входящие для истории.",
+            "finance_add_category" to "Добавить категорию",
+            "finance_logged_as" to "Записано · %s",
+            "finance_dont_track_done" to "Удалено из финансов",
+            "finance_scan_done" to "Добавлено %d списаний",
+            "finance_scanning" to "Сканирование…",
+            "finance_auto_badge" to "авто",
+            "finance_category_heat" to "По категориям",
+            "overlay_permission_needed" to "Разрешите наложение для категоризации из уведомлений"
         ),
         "it" to mapOf(
             "delete_thread" to "ELIMINA CONVERSAZIONE?",
@@ -3790,7 +4020,31 @@ object Translator {
             "send_failed_to" to "Invio SMS a %s fallito",
             "message_failed" to "Messaggio fallito",
             "mms_received_title" to "Messaggio MMS",
-            "mms_received_body" to "MMS o messaggio di gruppo ricevuto (non supportato)"
+            "mms_received_body" to "MMS o messaggio di gruppo ricevuto (non supportato)",
+            "finance_tab" to "FINANZE",
+            "starred_menu" to "Preferiti",
+            "categorize_action" to "Categorizza",
+            "dont_track_action" to "Non tracciare",
+            "uncategorized" to "Senza categoria",
+            "finance_this_month" to "Questo mese",
+            "finance_daily_avg" to "Media giornaliera",
+            "finance_weekly_avg" to "Media settimanale",
+            "finance_monthly_avg" to "Media mensile",
+            "finance_overall" to "Media totale",
+            "finance_needs_attention" to "Da categorizzare",
+            "finance_recent" to "Addebiti recenti",
+            "finance_manage_categories" to "Gestisci categorie",
+            "finance_scan_inbox" to "Scansiona inbox",
+            "finance_no_debits" to "Nessun addebito",
+            "finance_no_debits_desc" to "Gli SMS di addebito vengono registrati qui. Scansiona l'inbox per lo storico.",
+            "finance_add_category" to "Aggiungi categoria",
+            "finance_logged_as" to "Registrato · %s",
+            "finance_dont_track_done" to "Rimosso dalle finanze",
+            "finance_scan_done" to "Aggiunti %d addebiti",
+            "finance_scanning" to "Scansione…",
+            "finance_auto_badge" to "auto",
+            "finance_category_heat" to "Per categoria",
+            "overlay_permission_needed" to "Concedi permesso overlay per categorizzare dalle notifiche"
         )
     )
 
@@ -3802,6 +4056,82 @@ object Translator {
             String.format(java.util.Locale.getDefault(), template, *args)
         } catch (e: Exception) {
             template
+        }
+    }
+}
+
+@Composable
+fun StarredMessagesScreen(
+    starredMessages: List<Pair<SmsMessage, String>>,
+    onBack: () -> Unit,
+    onStarredMessageSelect: (Long, Long) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.size(24.dp)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = PureWhite
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = Translator.get("starred_menu").uppercase(),
+                color = PureWhite,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+        }
+
+        if (starredMessages.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp)
+                ) {
+                    Text(
+                        text = Translator.get("no_starred_messages"),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = TextSecondary,
+                        letterSpacing = 1.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = Translator.get("no_starred_desc"),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary.copy(alpha = 0.6f),
+                        letterSpacing = 0.5.sp,
+                        lineHeight = 15.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp)
+            ) {
+                items(starredMessages, key = { it.first.id }) { (msg, name) ->
+                    StarredMessageListItem(
+                        message = msg,
+                        name = name,
+                        onSelect = { onStarredMessageSelect(msg.threadId, msg.id) }
+                    )
+                }
+            }
         }
     }
 }

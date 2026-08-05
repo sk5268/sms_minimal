@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import com.example.finance.FinanceRepository
+import kotlinx.coroutines.runBlocking
 
 class NotificationActionReceiver : BroadcastReceiver() {
 
@@ -15,10 +17,16 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val ACTION_COPY_OTP = "com.example.ACTION_COPY_OTP"
         const val ACTION_DELETE_SMS = "com.example.ACTION_DELETE_SMS"
         const val ACTION_DISMISS = "com.example.ACTION_DISMISS"
+        const val ACTION_CATEGORIZE = "com.example.ACTION_CATEGORIZE"
+        const val ACTION_DONT_TRACK = "com.example.ACTION_DONT_TRACK"
         const val EXTRA_OTP = "com.example.EXTRA_OTP"
         const val EXTRA_SMS_URI = "com.example.EXTRA_SMS_URI"
         const val EXTRA_NOTIF_ID = "com.example.EXTRA_NOTIF_ID"
         const val EXTRA_SENDER = "com.example.EXTRA_SENDER"
+        const val EXTRA_DEBIT_ID = "com.example.EXTRA_DEBIT_ID"
+        const val EXTRA_AMOUNT_PAISE = "com.example.EXTRA_AMOUNT_PAISE"
+        const val EXTRA_SNIPPET = "com.example.EXTRA_SNIPPET"
+        const val EXTRA_SMS_MESSAGE_ID = "com.example.EXTRA_SMS_MESSAGE_ID"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -32,7 +40,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("OTP", otp)
                     clipboard.setPrimaryClip(clip)
-                    // Display micro toast without lagging main ui
                     Toast.makeText(context, Translator.get("otp_copied"), Toast.LENGTH_SHORT).show()
                 }
                 cancelNotification(context, notifId)
@@ -63,6 +70,32 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         e.printStackTrace()
                         Toast.makeText(context, Translator.get("delete_failed"), Toast.LENGTH_SHORT).show()
                     }
+                }
+                cancelNotification(context, notifId)
+            }
+            ACTION_CATEGORIZE -> {
+                val debitId = intent.getLongExtra(EXTRA_DEBIT_ID, -1L)
+                val amountPaise = intent.getLongExtra(EXTRA_AMOUNT_PAISE, 0L)
+                val sender = intent.getStringExtra(EXTRA_SENDER).orEmpty()
+                val snippet = intent.getStringExtra(EXTRA_SNIPPET).orEmpty()
+                if (debitId > 0L) {
+                    CategorizeOverlayService.start(
+                        context = context,
+                        debitId = debitId,
+                        amountPaise = amountPaise,
+                        sender = sender,
+                        snippet = snippet,
+                        notifId = notifId
+                    )
+                }
+            }
+            ACTION_DONT_TRACK -> {
+                val smsMessageId = intent.getLongExtra(EXTRA_SMS_MESSAGE_ID, -1L)
+                if (smsMessageId > 0L) {
+                    runBlocking {
+                        FinanceRepository.getInstance(context).dontTrack(smsMessageId)
+                    }
+                    Toast.makeText(context, Translator.get("finance_dont_track_done"), Toast.LENGTH_SHORT).show()
                 }
                 cancelNotification(context, notifId)
             }

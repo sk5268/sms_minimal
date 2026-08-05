@@ -12,6 +12,8 @@ import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Telephony
 import androidx.core.app.NotificationCompat
+import com.example.finance.FinanceRepository
+import kotlinx.coroutines.runBlocking
 
 class SmsReceiver : BroadcastReceiver() {
 
@@ -111,11 +113,40 @@ class SmsReceiver : BroadcastReceiver() {
             scheduleOtpAutoDelete(context, messageId)
         }
 
-        // 3. Query contact display name or fallback to number
+        // 3. Debit detection + auto-log
+        var debitId: Long? = null
+        var debitAmountPaise: Long? = null
+        if (messageId != null) {
+            val parsedDebit = DebitParser.parse(body, sender)
+            if (parsedDebit != null) {
+                debitAmountPaise = parsedDebit.amountPaise
+                debitId = runBlocking {
+                    FinanceRepository.getInstance(context).ingestDebit(
+                        smsMessageId = messageId,
+                        amountPaise = parsedDebit.amountPaise,
+                        sender = sender,
+                        snippet = parsedDebit.snippet,
+                        occurredAt = timestamp
+                    )
+                }
+            }
+        }
+
+        // 4. Query contact display name or fallback to number
         val displayName = getContactName(context, sender) ?: sender
 
-        // 4. Trigger system notification with action buttons
-        showSmsNotification(context, sender, displayName, body, otp, smsUriString)
+        // 5. Trigger system notification with action buttons
+        showSmsNotification(
+            context = context,
+            sender = sender,
+            displayName = displayName,
+            body = body,
+            otp = otp,
+            smsUriString = smsUriString,
+            messageId = messageId,
+            debitId = debitId,
+            debitAmountPaise = debitAmountPaise
+        )
     }
 
     private fun scheduleOtpAutoDelete(context: Context, messageId: Long) {
@@ -219,7 +250,10 @@ class SmsReceiver : BroadcastReceiver() {
         displayName: String,
         body: String,
         otp: String?,
-        smsUriString: String
+        smsUriString: String,
+        messageId: Long?,
+        debitId: Long?,
+        debitAmountPaise: Long?
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
@@ -306,7 +340,47 @@ class SmsReceiver : BroadcastReceiver() {
             )
         }
 
-        // 2. Delete SMS Action
+        // 2. Finance actions for debit SMS
+        if (debitId != null && debitAmountPaise != null && messageId != null) {
+            val categorizeIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_CATEGORIZE
+                putExtra(NotificationActionReceiver.EXTRA_DEBIT_ID, debitId)
+                putExtra(NotificationActionReceiver.EXTRA_AMOUNT_PAISE, debitAmountPaise)
+                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
+                putExtra(NotificationActionReceiver.EXTRA_SNIPPET, body.take(160))
+                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            }
+            val categorizePendingIntent = PendingIntent.getBroadcast(
+                context,
+                notifId + 4,
+                categorizeIntent,
+                actionFlags
+            )
+            builder.addAction(
+                0,
+                Translator.get("categorize_action"),
+                categorizePendingIntent
+            )
+
+            val dontTrackIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_DONT_TRACK
+                putExtra(NotificationActionReceiver.EXTRA_SMS_MESSAGE_ID, messageId)
+                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            }
+            val dontTrackPendingIntent = PendingIntent.getBroadcast(
+                context,
+                notifId + 5,
+                dontTrackIntent,
+                actionFlags
+            )
+            builder.addAction(
+                0,
+                Translator.get("dont_track_action"),
+                dontTrackPendingIntent
+            )
+        }
+
+        // 3. Delete SMS Action
         if (smsUriString.isNotEmpty()) {
             val deleteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_DELETE_SMS
