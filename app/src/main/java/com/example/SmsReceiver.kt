@@ -358,7 +358,7 @@ class SmsReceiver : BroadcastReceiver() {
             )
             builder.addAction(
                 0,
-                Translator.get("categorize_action"),
+                "Categorize",
                 categorizePendingIntent
             )
 
@@ -375,7 +375,7 @@ class SmsReceiver : BroadcastReceiver() {
             )
             builder.addAction(
                 0,
-                Translator.get("dont_track_action"),
+                "Don't Track",
                 dontTrackPendingIntent
             )
         }
@@ -390,7 +390,7 @@ class SmsReceiver : BroadcastReceiver() {
             val deletePendingIntent = PendingIntent.getBroadcast(context, notifId + 2, deleteIntent, actionFlags)
             builder.addAction(
                 0, // 0 handles platform-native minimalist styling
-                Translator.get("delete_message_action"),
+                "DELETE MESSAGE",
                 deletePendingIntent
             )
         }

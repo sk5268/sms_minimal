@@ -40,8 +40,8 @@ class MmsReceiver : BroadcastReceiver() {
 
             val builder = NotificationCompat.Builder(context, SmsReceiver.CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.sym_action_chat)
-                .setContentTitle(Translator.get("mms_received_title"))
-                .setContentText(Translator.get("mms_received_body"))
+                .setContentTitle("MMS Message")
+                .setContentText("MMS or Group Message received (unsupported)")
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(mainPendingIntent)
                 .setAutoCancel(true)

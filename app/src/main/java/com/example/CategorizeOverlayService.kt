@@ -86,7 +86,7 @@ class CategorizeOverlayService : Service() {
             startActivity(settingsIntent)
             android.widget.Toast.makeText(
                 this,
-                Translator.get("overlay_permission_needed"),
+                "Grant overlay permission to categorize from notifications",
                 android.widget.Toast.LENGTH_LONG
             ).show()
             stopSelf()
@@ -243,7 +243,7 @@ class CategorizeOverlayService : Service() {
                                             cancelNotificationIfNeeded(notifId)
                                             android.widget.Toast.makeText(
                                                 this@CategorizeOverlayService,
-                                                Translator.get("finance_logged_as", category.name),
+                                                "Logged · ${category.name}",
                                                 android.widget.Toast.LENGTH_SHORT
                                             ).show()
                                             onDismiss()
@@ -273,7 +273,7 @@ class CategorizeOverlayService : Service() {
                                     cancelNotificationIfNeeded(notifId)
                                     android.widget.Toast.makeText(
                                         this@CategorizeOverlayService,
-                                        Translator.get("finance_dont_track_done"),
+                                        "Removed from finance",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                     onDismiss()
@@ -282,7 +282,7 @@ class CategorizeOverlayService : Service() {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = Translator.get("dont_track_action").uppercase(),
+                                text = "Don't Track".uppercase(),
                                 color = AccentRed,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 10.sp,

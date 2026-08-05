@@ -40,7 +40,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("OTP", otp)
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, Translator.get("otp_copied"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "OTP Copied", Toast.LENGTH_SHORT).show()
                 }
                 cancelNotification(context, notifId)
             }
@@ -57,18 +57,18 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         if (messageId != null) {
                             val deleteManager = DeleteManager(context)
                             deleteManager.softDeleteMessage(messageId)
-                            Toast.makeText(context, Translator.get("sms_deleted"), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "SMS Deleted", Toast.LENGTH_SHORT).show()
                         } else {
                             val deletedRows = context.contentResolver.delete(uri, null, null)
                             if (deletedRows > 0) {
-                                Toast.makeText(context, Translator.get("sms_deleted"), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "SMS Deleted", Toast.LENGTH_SHORT).show()
                             } else {
-                                Toast.makeText(context, Translator.get("clear_from_provider"), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Cleared from database", Toast.LENGTH_SHORT).show()
                             }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        Toast.makeText(context, Translator.get("delete_failed"), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Delete failed", Toast.LENGTH_SHORT).show()
                     }
                 }
                 cancelNotification(context, notifId)
@@ -95,7 +95,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     runBlocking {
                         FinanceRepository.getInstance(context).dontTrack(smsMessageId)
                     }
-                    Toast.makeText(context, Translator.get("finance_dont_track_done"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                 }
                 cancelNotification(context, notifId)
             }

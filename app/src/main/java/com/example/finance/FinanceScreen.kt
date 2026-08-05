@@ -42,7 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.Translator
 import com.example.formatRupees
 import com.example.ui.theme.AccentBlue
 import com.example.ui.theme.AccentGreen
@@ -91,7 +90,7 @@ fun FinanceScreen() {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = Translator.get("finance_this_month"),
+                    text = "This month",
                     color = TextSecondary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp,
@@ -116,21 +115,21 @@ fun FinanceScreen() {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                AverageCell(Translator.get("finance_daily_avg"), stats?.dailyAveragePaise ?: 0L)
-                AverageCell(Translator.get("finance_weekly_avg"), stats?.weeklyAveragePaise ?: 0L)
+                AverageCell("Daily avg", stats?.dailyAveragePaise ?: 0L)
+                AverageCell("Weekly avg", stats?.weeklyAveragePaise ?: 0L)
             }
             Spacer(modifier = Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                AverageCell(Translator.get("finance_monthly_avg"), stats?.monthlyAveragePaise ?: 0L)
-                AverageCell(Translator.get("finance_overall"), stats?.overallAveragePaise ?: 0L)
+                AverageCell("Monthly avg", stats?.monthlyAveragePaise ?: 0L)
+                AverageCell("Overall avg", stats?.overallAveragePaise ?: 0L)
             }
         }
 
         item {
-            SectionLabel(Translator.get("finance_category_heat"))
+            SectionLabel("Category heat")
             val totals = stats?.categoryTotals.orEmpty()
                 .mapNotNull { total ->
                     val cat = categoryMap[total.categoryId] ?: return@mapNotNull null
@@ -140,7 +139,7 @@ fun FinanceScreen() {
                 .take(6)
 
             if (totals.isEmpty()) {
-                EmptyHint(Translator.get("finance_no_debits_desc"))
+                EmptyHint("Debit SMS will auto-log here. Scan inbox for history.")
             } else {
                 CategoryBarChart(
                     entries = totals,
@@ -176,17 +175,17 @@ fun FinanceScreen() {
         }
 
         if (uncategorizedDebits.isNotEmpty()) {
-            item { SectionLabel(Translator.get("finance_needs_attention")) }
+            item { SectionLabel("Needs attention") }
             items(uncategorizedDebits.take(8), key = { it.id }) { debit ->
                 DebitRow(
                     debit = debit,
-                    categoryName = categoryMap[debit.categoryId]?.name ?: Translator.get("uncategorized"),
+                    categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
                     onRecategorize = { recategorizeDebit = debit },
                     onDontTrack = {
                         scope.launch(Dispatchers.IO) {
                             repo.dontTrackByDebitId(debit.id)
                         }
-                        Toast.makeText(context, Translator.get("finance_dont_track_done"), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -198,9 +197,9 @@ fun FinanceScreen() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionLabel(Translator.get("finance_recent"))
+                SectionLabel("Recent debits")
                 Text(
-                    text = if (isScanning) Translator.get("finance_scanning") else Translator.get("finance_scan_inbox"),
+                    text = if (isScanning) "Scanning…" else "Scan inbox",
                     color = AccentBlue,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 9.sp,
@@ -213,7 +212,7 @@ fun FinanceScreen() {
                                 isScanning = false
                                 Toast.makeText(
                                     context,
-                                    Translator.get("finance_scan_done", count),
+                                    "Added ${count} debits",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
@@ -224,19 +223,19 @@ fun FinanceScreen() {
         }
 
         if (debits.isEmpty()) {
-            item { EmptyHint(Translator.get("finance_no_debits_desc")) }
+            item { EmptyHint("Debit SMS will auto-log here. Scan inbox for history.") }
         } else {
             items(debits.take(20), key = { it.id }) { debit ->
                 DebitRow(
                     debit = debit,
-                    categoryName = categoryMap[debit.categoryId]?.name ?: Translator.get("uncategorized"),
+                    categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
                     showAutoBadge = debit.autoCategorized,
                     onRecategorize = { recategorizeDebit = debit },
                     onDontTrack = {
                         scope.launch(Dispatchers.IO) {
                             repo.dontTrackByDebitId(debit.id)
                         }
-                        Toast.makeText(context, Translator.get("finance_dont_track_done"), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -251,7 +250,7 @@ fun FinanceScreen() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionLabel(Translator.get("finance_manage_categories"))
+                SectionLabel("Manage categories")
                 Text(
                     text = "+",
                     color = AccentGreen,
@@ -288,7 +287,7 @@ fun FinanceScreen() {
                             recategorizeDebit = null
                             Toast.makeText(
                                 context,
-                                Translator.get("finance_logged_as", category.name),
+                                "Logged · ${category.name}",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
@@ -297,7 +296,7 @@ fun FinanceScreen() {
             },
             confirmButton = {
                 TextButton(onClick = { recategorizeDebit = null }) {
-                    Text(Translator.get("cancel"), color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -309,7 +308,7 @@ fun FinanceScreen() {
             containerColor = Color(0xFF161821),
             title = {
                 Text(
-                    Translator.get("finance_manage_categories"),
+                    "Manage categories",
                     color = PureWhite,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 14.sp
@@ -331,7 +330,7 @@ fun FinanceScreen() {
                             )
                             if (!category.isSystem) {
                                 Text(
-                                    text = Translator.get("delete"),
+                                    text = "DELETE",
                                     color = AccentRed,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
@@ -345,7 +344,7 @@ fun FinanceScreen() {
                         }
                     }
                     Text(
-                        text = Translator.get("finance_add_category"),
+                        text = "Add category",
                         color = AccentGreen,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
@@ -355,7 +354,7 @@ fun FinanceScreen() {
             },
             confirmButton = {
                 TextButton(onClick = { showManage = false }) {
-                    Text(Translator.get("cancel"), color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -367,7 +366,7 @@ fun FinanceScreen() {
             containerColor = Color(0xFF161821),
             title = {
                 Text(
-                    Translator.get("finance_add_category"),
+                    "Add category",
                     color = PureWhite,
                     fontFamily = FontFamily.Monospace
                 )
@@ -398,12 +397,12 @@ fun FinanceScreen() {
                         }
                     }
                 ) {
-                    Text(Translator.get("add"), color = AccentGreen, fontFamily = FontFamily.Monospace)
+                    Text("+ ADD", color = AccentGreen, fontFamily = FontFamily.Monospace)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showAddCategory = false }) {
-                    Text(Translator.get("cancel"), color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -480,7 +479,7 @@ private fun DebitRow(
     onRecategorize: () -> Unit,
     onDontTrack: () -> Unit
 ) {
-    val dateFormat = remember { SimpleDateFormat("dd MMM · HH:mm", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("dd MMM · HH:mm", Locale.US) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -538,7 +537,7 @@ private fun DebitRow(
                 )
                 if (showAutoBadge) {
                     Text(
-                        text = Translator.get("finance_auto_badge"),
+                        text = "auto",
                         color = AccentBlue,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 8.sp
@@ -546,7 +545,7 @@ private fun DebitRow(
                 }
             }
             Text(
-                text = Translator.get("dont_track_action"),
+                text = "Don't Track",
                 color = AccentRed.copy(alpha = 0.85f),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 8.sp,
