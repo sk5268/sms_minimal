@@ -21,3 +21,10 @@ keystore.properties
 # Built artifacts
 *.apk
 *.aab
+
+.repowise/
+.claude/
+.vscode/
+.mcp.json
+
+scratch/
