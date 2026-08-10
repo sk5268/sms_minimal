@@ -458,12 +458,13 @@ fun FinanceScreen() {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (newCategoryName.isNotBlank()) {
-                            scope.launch(Dispatchers.IO) {
-                                repo.addCategory(newCategoryName, 0xFFFF9F0A.toInt())
-                            }
+                        val name = newCategoryName.trim()
+                        if (name.isNotBlank()) {
                             newCategoryName = ""
                             showAddCategory = false
+                            scope.launch(Dispatchers.IO) {
+                                repo.addCategory(name, 0xFFFF9F0A.toInt())
+                            }
                         }
                     }
                 ) {
