@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -74,19 +75,75 @@ fun FinanceScreen() {
     var recategorizeDebit by remember { mutableStateOf<DebitEntity?>(null) }
     var newCategoryName by remember { mutableStateOf("") }
 
-    LaunchedEffect(debits) {
+    LaunchedEffect(debits, categories) {
         stats = withContext(Dispatchers.IO) { repo.getStats() }
+    }
+
+    val categoryMap = categories.associateBy { it.id }
+
+    val sparklineTotals = remember(stats, debits) {
+        val fromStats = stats?.dailyTotals.orEmpty().filter { it.totalPaise > 0 }
+        if (fromStats.isNotEmpty()) fromStats
+        else if (debits.isNotEmpty()) {
+            debits.groupBy { it.occurredAt / 86_400_000L * 86_400_000L }
+                .map { (day, list) -> DailyTotal(day, list.sumOf { it.amountPaise }) }
+                .sortedBy { it.dayStart }
+        } else {
+            emptyList()
+        }
+    }
+
+    val categoryTotals = remember(stats, debits, categoryMap) {
+        val fromStats = stats?.categoryTotals.orEmpty()
+            .map { total ->
+                val name = categoryMap[total.categoryId]?.name ?: "Uncategorized"
+                name to total.totalPaise
+            }
+            .filter { it.second > 0 }
+
+        val source = if (fromStats.isNotEmpty()) {
+            fromStats
+        } else if (debits.isNotEmpty()) {
+            debits.groupBy { it.categoryId }
+                .map { (categoryId, list) ->
+                    val name = categoryMap[categoryId]?.name ?: "Uncategorized"
+                    name to list.sumOf { it.amountPaise }
+                }
+        } else {
+            emptyList()
+        }
+
+        source.sortedByDescending { it.second }.take(6)
     }
 
     val uncategorizedId = categories.find { it.name == "Uncategorized" }?.id
     val uncategorizedDebits = debits.filter { it.categoryId == uncategorizedId }
-    val categoryMap = categories.associateBy { it.id }
+    val attentionDebits = uncategorizedDebits.take(8)
+    val attentionIds = attentionDebits.map { it.id }.toSet()
+    val recentDebits = debits.filter { it.id !in attentionIds }.take(20)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp, start = 20.dp, end = 20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(OLEDBlack, RoundedCornerShape(20.dp))
+                    .border(1.dp, Color(0xFF1E2027), RoundedCornerShape(20.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SectionLabel("Spend pulse · 30 days")
+                SpendSparkline(
+                    dailyTotals = sparklineTotals,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -102,10 +159,6 @@ fun FinanceScreen() {
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     fontSize = 34.sp
-                )
-                SpendSparkline(
-                    dailyTotals = stats?.dailyTotals.orEmpty(),
-                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }
@@ -129,54 +182,71 @@ fun FinanceScreen() {
         }
 
         item {
-            SectionLabel("Category heat")
-            val totals = stats?.categoryTotals.orEmpty()
-                .mapNotNull { total ->
-                    val cat = categoryMap[total.categoryId] ?: return@mapNotNull null
-                    cat.name to total.totalPaise
-                }
-                .sortedByDescending { it.second }
-                .take(6)
+            SectionLabel("Category breakdown")
+            val totals = categoryTotals
 
             if (totals.isEmpty()) {
                 EmptyHint("Debit SMS will auto-log here. Scan inbox for history.")
             } else {
-                CategoryBarChart(
-                    entries = totals,
-                    colors = totals.map { entry ->
-                        val cat = categories.find { it.name == entry.first }
-                        Color(cat?.colorArgb ?: AccentBlue.toArgb())
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                totals.forEach { (name, amount) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                val barColors = totals.map { entry ->
+                    val cat = categories.find { it.name == entry.first }
+                    if (cat != null) Color(cat.colorArgb) else AccentBlue
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CategoryDonutChart(
+                        entries = totals,
+                        colors = barColors,
+                        modifier = Modifier.weight(0.42f)
+                    )
+                    Column(
+                        modifier = Modifier.weight(0.58f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = name.uppercase(),
-                            color = TextSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 9.sp,
-                            letterSpacing = 0.8.sp
-                        )
-                        Text(
-                            text = formatRupees(amount),
-                            color = TextPrimary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp
-                        )
+                        totals.forEachIndexed { index, (name, amount) ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(
+                                            barColors[index],
+                                            RoundedCornerShape(50)
+                                        )
+                                )
+                                Text(
+                                    text = name.uppercase(),
+                                    color = TextSecondary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 8.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = formatRupees(amount),
+                                    color = TextPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 9.sp
+                                )
+                            }
+                        }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
+                CategoryBarChart(
+                    entries = totals,
+                    colors = barColors
+                )
             }
         }
 
-        if (uncategorizedDebits.isNotEmpty()) {
+        if (attentionDebits.isNotEmpty()) {
             item { SectionLabel("Needs attention") }
-            items(uncategorizedDebits.take(8), key = { it.id }) { debit ->
+            items(attentionDebits, key = { it.id }) { debit ->
                 DebitRow(
                     debit = debit,
                     categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
@@ -224,8 +294,8 @@ fun FinanceScreen() {
 
         if (debits.isEmpty()) {
             item { EmptyHint("Debit SMS will auto-log here. Scan inbox for history.") }
-        } else {
-            items(debits.take(20), key = { it.id }) { debit ->
+        } else if (recentDebits.isNotEmpty()) {
+            items(recentDebits, key = { it.id }) { debit ->
                 DebitRow(
                     debit = debit,
                     categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
@@ -390,7 +460,7 @@ fun FinanceScreen() {
                     onClick = {
                         if (newCategoryName.isNotBlank()) {
                             scope.launch(Dispatchers.IO) {
-                                repo.addCategory(newCategoryName, AccentOrange.toArgb())
+                                repo.addCategory(newCategoryName, 0xFFFF9F0A.toInt())
                             }
                             newCategoryName = ""
                             showAddCategory = false
@@ -553,13 +623,4 @@ private fun DebitRow(
             )
         }
     }
-}
-
-private fun Color.toArgb(): Int {
-    return android.graphics.Color.argb(
-        (alpha * 255).toInt(),
-        (red * 255).toInt(),
-        (green * 255).toInt(),
-        (blue * 255).toInt()
-    )
 }

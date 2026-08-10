@@ -311,7 +311,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         
         // Retrieve initial target address if clicking a notification
-        targetSenderState.value = intent?.getStringExtra("sender_number")
+        val senderFromNotif = intent?.getStringExtra("sender_number")
+        targetSenderState.value = senderFromNotif
+        // Content tap auto-cancels the notification without firing deleteIntent,
+        // so clear the merge cache here too.
+        if (!senderFromNotif.isNullOrEmpty()) {
+            SmsReceiver.clearSenderMessages(this, senderFromNotif)
+        }
 
         setContent {
             MyApplicationTheme {
@@ -334,7 +340,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        targetSenderState.value = intent.getStringExtra("sender_number")
+        val senderFromNotif = intent.getStringExtra("sender_number")
+        targetSenderState.value = senderFromNotif
+        if (!senderFromNotif.isNullOrEmpty()) {
+            SmsReceiver.clearSenderMessages(this, senderFromNotif)
+        }
     }
 }
 

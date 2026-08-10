@@ -71,7 +71,8 @@ class FinanceRepository(context: Context) {
             autoCategorized = match.autoCategorized
         )
         val rowId = dao.insertDebit(debit)
-        return if (rowId == -1L) dao.getDebitBySmsMessageId(smsMessageId)?.id else rowId
+        if (rowId > 0L) return rowId
+        return dao.getDebitBySmsMessageId(smsMessageId)?.id
     }
 
     suspend fun categorizeDebit(debitId: Long, categoryId: Long, learnSender: Boolean = true) {

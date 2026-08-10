@@ -42,7 +42,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     clipboard.setPrimaryClip(clip)
                     Toast.makeText(context, "OTP Copied", Toast.LENGTH_SHORT).show()
                 }
-                cancelNotification(context, notifId)
+                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
             ACTION_DELETE_SMS -> {
                 val uriString = intent.getStringExtra(EXTRA_SMS_URI)
@@ -71,7 +71,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         Toast.makeText(context, "Delete failed", Toast.LENGTH_SHORT).show()
                     }
                 }
-                cancelNotification(context, notifId)
+                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
             ACTION_CATEGORIZE -> {
                 val debitId = intent.getLongExtra(EXTRA_DEBIT_ID, -1L)
@@ -79,7 +79,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val sender = intent.getStringExtra(EXTRA_SENDER).orEmpty()
                 val snippet = intent.getStringExtra(EXTRA_SNIPPET).orEmpty()
                 if (debitId > 0L) {
-                    CategorizeOverlayService.start(
+                    CategorizeOverlayActivity.start(
                         context = context,
                         debitId = debitId,
                         amountPaise = amountPaise,
@@ -97,9 +97,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     }
                     Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                 }
-                cancelNotification(context, notifId)
+                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
             ACTION_DISMISS -> {
+                // Swipe/clear: notification is already gone; only drop the merge cache.
                 val sender = intent.getStringExtra(EXTRA_SENDER)
                 if (!sender.isNullOrEmpty()) {
                     SmsReceiver.clearSenderMessages(context, sender)
@@ -108,7 +109,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun cancelNotification(context: Context, notifId: Int) {
+    private fun dismissSenderNotification(context: Context, sender: String?, notifId: Int) {
+        if (!sender.isNullOrEmpty()) {
+            SmsReceiver.clearSenderMessages(context, sender)
+        }
         if (notifId != -1) {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(notifId)

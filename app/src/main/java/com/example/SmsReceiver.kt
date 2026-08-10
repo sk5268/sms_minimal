@@ -331,6 +331,7 @@ class SmsReceiver : BroadcastReceiver() {
                 action = NotificationActionReceiver.ACTION_COPY_OTP
                 putExtra(NotificationActionReceiver.EXTRA_OTP, otp)
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }
             val copyPendingIntent = PendingIntent.getBroadcast(context, notifId + 1, copyIntent, actionFlags)
             builder.addAction(
@@ -342,15 +343,15 @@ class SmsReceiver : BroadcastReceiver() {
 
         // 2. Finance actions for debit SMS
         if (debitId != null && debitAmountPaise != null && messageId != null) {
-            val categorizeIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-                action = NotificationActionReceiver.ACTION_CATEGORIZE
-                putExtra(NotificationActionReceiver.EXTRA_DEBIT_ID, debitId)
-                putExtra(NotificationActionReceiver.EXTRA_AMOUNT_PAISE, debitAmountPaise)
-                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
-                putExtra(NotificationActionReceiver.EXTRA_SNIPPET, body.take(160))
-                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            val categorizeIntent = Intent(context, CategorizeOverlayActivity::class.java).apply {
+                putExtra(CategorizeOverlayActivity.EXTRA_DEBIT_ID, debitId)
+                putExtra(CategorizeOverlayActivity.EXTRA_AMOUNT_PAISE, debitAmountPaise)
+                putExtra(CategorizeOverlayActivity.EXTRA_SENDER, sender)
+                putExtra(CategorizeOverlayActivity.EXTRA_SNIPPET, body.take(160))
+                putExtra(CategorizeOverlayActivity.EXTRA_NOTIF_ID, notifId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            val categorizePendingIntent = PendingIntent.getBroadcast(
+            val categorizePendingIntent = PendingIntent.getActivity(
                 context,
                 notifId + 4,
                 categorizeIntent,
@@ -366,6 +367,7 @@ class SmsReceiver : BroadcastReceiver() {
                 action = NotificationActionReceiver.ACTION_DONT_TRACK
                 putExtra(NotificationActionReceiver.EXTRA_SMS_MESSAGE_ID, messageId)
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }
             val dontTrackPendingIntent = PendingIntent.getBroadcast(
                 context,
@@ -386,6 +388,7 @@ class SmsReceiver : BroadcastReceiver() {
                 action = NotificationActionReceiver.ACTION_DELETE_SMS
                 putExtra(NotificationActionReceiver.EXTRA_SMS_URI, smsUriString)
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }
             val deletePendingIntent = PendingIntent.getBroadcast(context, notifId + 2, deleteIntent, actionFlags)
             builder.addAction(
