@@ -65,13 +65,13 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -1741,7 +1741,7 @@ fun ConversationScreen(
                             .size(36.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ContentCopy,
+                            painter = painterResource(R.drawable.ic_content_copy),
                             contentDescription = "Copy Selected",
                             tint = PureWhite,
                             modifier = Modifier.size(18.dp)

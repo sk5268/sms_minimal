@@ -16,7 +16,9 @@ data class FinanceStats(
     val overallAveragePaise: Long,
     val overallTotalPaise: Long,
     val dailyTotals: List<DailyTotal>,
-    val categoryTotals: List<CategoryTotal>
+    val categoryTotals: List<CategoryTotal>,
+    val weekStartTimestamp: Long = 0L,
+    val weekEndTimestamp: Long = 0L
 )
 
 class FinanceRepository(context: Context) {
@@ -117,23 +119,28 @@ class FinanceRepository(context: Context) {
         dao.deleteCategory(categoryId)
     }
 
-    suspend fun getStats(): FinanceStats = withContext(Dispatchers.IO) {
+    suspend fun getStats(targetYear: Int, targetMonthZeroIndexed: Int): FinanceStats = withContext(Dispatchers.IO) {
         ensureSeeded()
         val now = System.currentTimeMillis()
-        val monthStart = startOfMonth(now)
-        val monthEnd = startOfNextMonth(now)
+        val (monthStart, monthEnd) = getMonthBounds(targetYear, targetMonthZeroIndexed)
+
         val monthTotal = dao.sumBetween(monthStart, monthEnd)
+        val dailyTotals = dao.dailyTotalsBetween(monthStart, monthEnd)
 
-        val thirtyDaysAgo = now - 30L * 24 * 60 * 60 * 1000
-        val dailyTotals = dao.dailyTotalsSince(thirtyDaysAgo)
+        val isCurrentMonth = now >= monthStart && now < monthEnd
+        val effectiveEnd = if (isCurrentMonth) now else monthEnd
+        val daysInMonthSoFar = Calendar.getInstance().apply {
+            timeInMillis = effectiveEnd - 1
+        }.get(Calendar.DAY_OF_MONTH).coerceAtLeast(1)
 
-        val weekStart = now - 7L * 24 * 60 * 60 * 1000
-        val weekTotal = dao.sumBetween(weekStart, now)
-        val weekDays = dao.distinctDaysBetween(weekStart, now).coerceAtLeast(1)
+        val dailyAveragePaise = if (daysInMonthSoFar > 0) monthTotal / daysInMonthSoFar else 0L
 
-        val monthDays = dao.distinctDaysBetween(monthStart, monthEnd).coerceAtLeast(1)
-        val monthSpanDays = dao.distinctDaysBetween(monthStart, now).coerceAtLeast(1)
-        val dailyInMonth = if (monthSpanDays > 0) monthTotal / monthSpanDays else 0L
+        val weekEnd = if (isCurrentMonth) now else (monthEnd - 1)
+        val rawWeekStart = weekEnd - 7L * 24 * 60 * 60 * 1000
+        val weekStart = if (rawWeekStart < monthStart) monthStart else rawWeekStart
+        val weekTotal = dao.sumBetween(weekStart, weekEnd)
+        val weekDaysSpan = (((weekEnd - weekStart) / (24 * 60 * 60 * 1000)).toInt() + 1).coerceAtLeast(1)
+        val weeklyAveragePaise = weekTotal / weekDaysSpan
 
         val overallTotal = dao.sumAll()
         val earliest = dao.earliestDebitTime()
@@ -142,16 +149,36 @@ class FinanceRepository(context: Context) {
             span.coerceAtLeast(1)
         } else 1
 
+        val distinctMonthsCount = dao.distinctMonthsCount().coerceAtLeast(1)
+
         FinanceStats(
             monthTotalPaise = monthTotal,
-            dailyAveragePaise = dailyInMonth,
-            weeklyAveragePaise = weekTotal / weekDays,
-            monthlyAveragePaise = monthTotal / monthDays,
+            dailyAveragePaise = dailyAveragePaise,
+            weeklyAveragePaise = weeklyAveragePaise,
+            monthlyAveragePaise = overallTotal / distinctMonthsCount,
             overallAveragePaise = overallTotal / overallDays,
             overallTotalPaise = overallTotal,
             dailyTotals = dailyTotals,
-            categoryTotals = dao.categoryTotals()
+            categoryTotals = dao.categoryTotalsBetween(monthStart, monthEnd),
+            weekStartTimestamp = weekStart,
+            weekEndTimestamp = weekEnd
         )
+    }
+
+    private fun getMonthBounds(year: Int, monthZeroIndexed: Int): Pair<Long, Long> {
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, monthZeroIndexed)
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val start = cal.timeInMillis
+        cal.add(Calendar.MONTH, 1)
+        val end = cal.timeInMillis
+        return Pair(start, end)
     }
 
     suspend fun scanInbox(days: Int = 90): Int = withContext(Dispatchers.IO) {

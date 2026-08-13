@@ -94,8 +94,8 @@ interface FinanceDao {
     @Query("SELECT COALESCE(SUM(amountPaise), 0) FROM debits")
     suspend fun sumAll(): Long
 
-    @Query("SELECT categoryId, COALESCE(SUM(amountPaise), 0) AS totalPaise FROM debits GROUP BY categoryId")
-    suspend fun categoryTotals(): List<CategoryTotal>
+    @Query("SELECT categoryId, COALESCE(SUM(amountPaise), 0) AS totalPaise FROM debits WHERE occurredAt >= :start AND occurredAt < :end GROUP BY categoryId")
+    suspend fun categoryTotalsBetween(start: Long, end: Long): List<CategoryTotal>
 
     @Query(
         """
@@ -109,8 +109,23 @@ interface FinanceDao {
     )
     suspend fun dailyTotalsSince(since: Long): List<DailyTotal>
 
+    @Query(
+        """
+        SELECT (occurredAt / 86400000) * 86400000 AS dayStart,
+               COALESCE(SUM(amountPaise), 0) AS totalPaise
+        FROM debits
+        WHERE occurredAt >= :start AND occurredAt < :end
+        GROUP BY dayStart
+        ORDER BY dayStart ASC
+        """
+    )
+    suspend fun dailyTotalsBetween(start: Long, end: Long): List<DailyTotal>
+
     @Query("SELECT COUNT(DISTINCT (occurredAt / 86400000)) FROM debits WHERE occurredAt >= :start AND occurredAt < :end")
     suspend fun distinctDaysBetween(start: Long, end: Long): Int
+
+    @Query("SELECT COUNT(DISTINCT (strftime('%Y-%m', occurredAt / 1000, 'unixepoch'))) FROM debits")
+    suspend fun distinctMonthsCount(): Int
 
     @Query("SELECT MIN(occurredAt) FROM debits")
     suspend fun earliestDebitTime(): Long?

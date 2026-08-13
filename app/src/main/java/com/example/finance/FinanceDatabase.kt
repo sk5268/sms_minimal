@@ -43,13 +43,13 @@ abstract class FinanceDatabase : RoomDatabase() {
             super.onCreate(db)
             val now = System.currentTimeMillis()
             val categories = listOf(
-                Triple("Uncategorized", 0xFF6B7280.toInt(), 0),
-                Triple("Food", 0xFFFF9F0A.toInt(), 1),
-                Triple("Fuel", 0xFF4086FF.toInt(), 2),
-                Triple("Home", 0xFF32D74B.toInt(), 3),
-                Triple("Bike Maintenance", 0xFFFF453A.toInt(), 4),
-                Triple("Groceries", 0xFF00E5FF.toInt(), 5),
-                Triple("Other", 0xFF8A8A93.toInt(), 6)
+                Triple("Uncategorized", 0xFF6B7280.toInt(), 0), // Slate Grey
+                Triple("Food", 0xFFFF9F0A.toInt(), 1),          // Orange
+                Triple("Fuel", 0xFF4086FF.toInt(), 2),          // Electric Blue
+                Triple("Home", 0xFF32D74B.toInt(), 3),          // Neon Green
+                Triple("Bike Maintenance", 0xFFFF453A.toInt(), 4), // Red
+                Triple("Groceries", 0xFF00E5FF.toInt(), 5),     // Neon Cyan
+                Triple("Other", 0xFFBF5AF2.toInt(), 6)          // Purple
             )
             categories.forEachIndexed { index, (name, color, order) ->
                 val isSystem = if (name == "Uncategorized") 1 else 0
