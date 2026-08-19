@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -79,8 +80,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.pager.PagerDefaults
-import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.graphicsLayer
@@ -95,6 +94,7 @@ import kotlin.math.roundToInt
 import com.example.ui.theme.*
 import com.example.finance.FinanceScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalDensity
 
@@ -186,6 +186,20 @@ class ArchiveManager(context: Context) {
     fun setSkipThreadDeleteWarning(skip: Boolean) {
         prefs.edit().putBoolean("skip_delete_warning", skip).apply()
     }
+
+    fun shouldSkipMessageDeleteWarning(): Boolean {
+        return prefs.getBoolean("skip_message_delete_warning", false)
+    }
+
+    fun setSkipMessageDeleteWarning(skip: Boolean) {
+        prefs.edit().putBoolean("skip_message_delete_warning", skip).apply()
+    }
+}
+
+fun restoreIncomingConversation(context: Context, threadId: Long) {
+    if (threadId <= 0L) return
+    DeleteManager(context).restoreThread(threadId)
+    ArchiveManager(context).unarchiveThread(context, threadId)
 }
 
 // Ultra-light SharedPreferences Delete Manager for Soft Deletion (6 hours)
@@ -305,19 +319,12 @@ class StarManager(context: Context) {
 
 class MainActivity : ComponentActivity() {
     private val targetSenderState = mutableStateOf<String?>(null)
+    private val targetThreadIdState = mutableLongStateOf(-1L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
-        // Retrieve initial target address if clicking a notification
-        val senderFromNotif = intent?.getStringExtra("sender_number")
-        targetSenderState.value = senderFromNotif
-        // Content tap auto-cancels the notification without firing deleteIntent,
-        // so clear the merge cache here too.
-        if (!senderFromNotif.isNullOrEmpty()) {
-            SmsReceiver.clearSenderMessages(this, senderFromNotif)
-        }
+        applyNotificationIntent(intent)
 
         setContent {
             MyApplicationTheme {
@@ -327,9 +334,13 @@ class MainActivity : ComponentActivity() {
                 ) {
                     SMSAppScreen(
                         targetSender = targetSenderState.value,
+                        targetThreadId = targetThreadIdState.longValue,
                         onTargetSenderHandled = {
                             targetSenderState.value = null
-                            intent?.removeExtra("sender_number")
+                            targetThreadIdState.longValue = -1L
+                            intent?.removeExtra(SmsReceiver.EXTRA_SENDER_NUMBER)
+                            intent?.removeExtra(SmsReceiver.EXTRA_THREAD_ID)
+                            intent?.removeExtra(SmsReceiver.EXTRA_MESSAGE_ID)
                         }
                     )
                 }
@@ -340,10 +351,16 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val senderFromNotif = intent.getStringExtra("sender_number")
+        applyNotificationIntent(intent)
+    }
+
+    private fun applyNotificationIntent(intent: Intent?) {
+        val senderFromNotif = intent?.getStringExtra(SmsReceiver.EXTRA_SENDER_NUMBER)
+        val threadFromNotif = intent?.getLongExtra(SmsReceiver.EXTRA_THREAD_ID, -1L) ?: -1L
         targetSenderState.value = senderFromNotif
+        targetThreadIdState.longValue = threadFromNotif
         if (!senderFromNotif.isNullOrEmpty()) {
-            SmsReceiver.clearSenderMessages(this, senderFromNotif)
+            SmsReceiver.dismissSenderNotification(this, senderFromNotif)
         }
     }
 }
@@ -380,7 +397,7 @@ private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
 }
 
 @Composable
-fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
+fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHandled: () -> Unit) {
     val context = LocalContext.current
     val archiveManager = remember { ArchiveManager(context) }
     val deleteManager = remember { DeleteManager(context) }
@@ -439,6 +456,8 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     var newRecipients by remember { mutableStateOf<List<ContactRecipient>>(emptyList()) }
     var newMessageText by remember { mutableStateOf("") }
     var chatMessageText by remember { mutableStateOf("") }
+
+    var threadPendingDelete by remember { mutableStateOf<SmsThread?>(null) }
 
     BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen || isStarredFolderOpen || selectedMessageIds.isNotEmpty()) {
         if (selectedMessageIds.isNotEmpty()) {
@@ -538,34 +557,85 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     }
 
     // 1. Thread Querying Hook
-    LaunchedEffect(permissionsGranted, archivedIds, unarchivedIds, deletedIds, refreshCounter, targetSender) {
+    LaunchedEffect(permissionsGranted, archivedIds, unarchivedIds, deletedIds, refreshCounter) {
         if (permissionsGranted) {
             withContext(Dispatchers.IO) {
-                // Background cleanup of expired soft-deleted threads
                 deleteManager.cleanUpExpired(context)
-                
                 val dbThreads = queryAllThreads(context, archivedIds, unarchivedIds, deletedIds)
                 withContext(Dispatchers.Main) {
                     threads = dbThreads
-                    
-                    // If target sender is provided from notification, open conversation automatically
-                    if (targetSender != null) {
-                        // Use PhoneNumberUtils.compare for fuzzy matching (handles +91 vs 0 vs raw digits)
-                        // Also try exact match first for alphanumeric senders (e.g. "HDFC-BANK")
-                        val found = dbThreads.find { it.address == targetSender }
-                            ?: dbThreads.find { PhoneNumberUtils.compare(it.address, targetSender) }
-                        if (found != null) {
-                            activeThread = found
-                        } else {
-                            // If thread genuinely doesn't exist, navigate to compose directly
-                            newRecipients = listOf(ContactRecipient(name = null, number = targetSender))
-                            isNewMessageOpen = true
-                        }
-                        onTargetSenderHandled()
-                    }
                 }
             }
         }
+    }
+
+    // Open the conversation from a notification tap. Retry briefly; never fall back to compose.
+    LaunchedEffect(permissionsGranted, targetSender, targetThreadId) {
+        if (!permissionsGranted) return@LaunchedEffect
+        if (targetSender.isNullOrEmpty() && targetThreadId <= 0L) return@LaunchedEffect
+
+        var resolvedThreadId = targetThreadId
+        if (resolvedThreadId <= 0L && !targetSender.isNullOrEmpty()) {
+            resolvedThreadId = withContext(Dispatchers.IO) {
+                try {
+                    Telephony.Threads.getOrCreateThreadId(context, targetSender)
+                } catch (e: Exception) {
+                    0L
+                }
+            }
+        }
+
+        if (resolvedThreadId > 0L) {
+            restoreIncomingConversation(context, resolvedThreadId)
+            deletedIds = deleteManager.getDeletedThreads().keys
+            archivedIds = archiveManager.getArchivedThreadIds()
+            unarchivedIds = archiveManager.getUnarchivedThreadIds()
+        }
+
+        var found: SmsThread? = null
+        for (attempt in 0 until 3) {
+            val snapshot = if (attempt == 0 && threads.isNotEmpty()) {
+                threads
+            } else {
+                withContext(Dispatchers.IO) {
+                    queryAllThreads(
+                        context,
+                        archiveManager.getArchivedThreadIds(),
+                        archiveManager.getUnarchivedThreadIds(),
+                        deleteManager.getDeletedThreads().keys
+                    )
+                }.also { threads = it }
+            }
+            found = findThreadForNotification(snapshot, context, targetSender, resolvedThreadId)
+            if (found != null) break
+            if (attempt < 2) delay(250)
+        }
+
+        val matched = found
+        if (matched != null) {
+            activeThread = matched.copy(isArchived = false)
+            isNewMessageOpen = false
+            onTargetSenderHandled()
+            return@LaunchedEffect
+        }
+
+        val address = targetSender.orEmpty()
+        if (resolvedThreadId > 0L || address.isNotEmpty()) {
+            val name = withContext(Dispatchers.IO) {
+                if (address.isNotEmpty()) getContactName(context, address) ?: address else "Unknown"
+            }
+            activeThread = SmsThread(
+                threadId = resolvedThreadId,
+                address = address,
+                name = name,
+                snippet = "",
+                timestamp = System.currentTimeMillis(),
+                unreadCount = 0,
+                isArchived = false
+            )
+            isNewMessageOpen = false
+        }
+        onTargetSenderHandled()
     }
 
     // 2. Active Thread Conversation List Querying Hook
@@ -573,7 +643,7 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
         val currentThread = activeThread
         if (currentThread != null && permissionsGranted) {
             withContext(Dispatchers.IO) {
-                val msgs = queryMessagesForThread(context, currentThread.threadId, deletedMessageIds)
+                val msgs = queryMessagesForThread(context, currentThread.threadId, currentThread.address, deletedMessageIds)
                 markThreadAsRead(context, currentThread.threadId)
                 withContext(Dispatchers.Main) {
                     activeMessages = msgs
@@ -614,6 +684,87 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
     }
 
     // Note: threadToDelete AlertDialog has been removed in favor of direct soft deletion
+
+    if (threadPendingDelete != null) {
+        val pending = threadPendingDelete!!
+        var dontWarnAgain by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { threadPendingDelete = null },
+            containerColor = Color(0xFF161821),
+            title = {
+                Text(
+                    text = "DELETE CONVERSATION?",
+                    color = PureWhite,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Move this conversation to Recently Deleted? It will be permanently removed after 6 hours.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { dontWarnAgain = !dontWarnAgain }
+                    ) {
+                        Checkbox(
+                            checked = dontWarnAgain,
+                            onCheckedChange = { dontWarnAgain = it },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = Color(0xFF4086FF),
+                                uncheckedColor = TextSecondary,
+                                checkmarkColor = PureWhite
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Don't warn again",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (dontWarnAgain) {
+                            archiveManager.setSkipThreadDeleteWarning(true)
+                        }
+                        deleteManager.softDeleteThread(pending.threadId)
+                        deletedIds = deleteManager.getDeletedThreads().keys
+                        threadPendingDelete = null
+                        refreshCounter++
+                    }
+                ) {
+                    Text(
+                        text = "[ DELETE ]",
+                        color = Color(0xFFFF453A),
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { threadPendingDelete = null }) {
+                    Text(
+                        text = "[ CANCEL ]",
+                        color = TextSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        )
+    }
 
     val mainBackgroundGradient = Brush.verticalGradient(
         colors = listOf(
@@ -866,9 +1017,13 @@ fun SMSAppScreen(targetSender: String?, onTargetSenderHandled: () -> Unit) {
                         unarchivedIds = archiveManager.getUnarchivedThreadIds()
                     },
                     onThreadDelete = { thread ->
-                        deleteManager.softDeleteThread(thread.threadId)
-                        deletedIds = deleteManager.getDeletedThreads().keys
-                        refreshCounter++
+                        if (archiveManager.shouldSkipThreadDeleteWarning()) {
+                            deleteManager.softDeleteThread(thread.threadId)
+                            deletedIds = deleteManager.getDeletedThreads().keys
+                            refreshCounter++
+                        } else {
+                            threadPendingDelete = thread
+                        }
                     },
                     onOpenDeletedFolder = { isDeletedFolderOpen = true },
                     onOpenStarredFolder = { isStarredFolderOpen = true },
@@ -928,16 +1083,6 @@ fun MainThreadsScreen(
             )
         }
     }
-
-    // Snappy fling behavior for HorizontalPager
-    val flingBehavior = PagerDefaults.flingBehavior(
-        state = pagerState,
-        pagerSnapDistance = PagerSnapDistance.atMost(1),
-        snapAnimationSpec = tween(
-            durationMillis = 200,
-            easing = FastOutSlowInEasing
-        )
-    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -1081,7 +1226,7 @@ fun MainThreadsScreen(
             // HorizontalPager allowing Horizontal Swiping between Tabs
             HorizontalPager(
                 state = pagerState,
-                flingBehavior = flingBehavior,
+                userScrollEnabled = false,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -1218,7 +1363,7 @@ fun ThreadListItem(
                 .background(Color(0xFF2C0F14))
                 .border(1.dp, Color(0xFFFF453A).copy(alpha = 0.25f), RoundedCornerShape(16.dp))
                 .padding(horizontal = 20.dp),
-            contentAlignment = if (offsetX < 0) Alignment.CenterEnd else Alignment.CenterStart
+            contentAlignment = Alignment.CenterEnd
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1247,8 +1392,13 @@ fun ThreadListItem(
                 .pointerInput(thread.threadId) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (offsetX < -swipeThresholdPx || offsetX > swipeThresholdPx) {
-                                isDeleting = true
+                            if (offsetX < -swipeThresholdPx) {
+                                if (isDeleted) {
+                                    isDeleting = true
+                                } else {
+                                    offsetX = 0f
+                                    onDelete()
+                                }
                             } else {
                                 offsetX = 0f
                             }
@@ -1259,7 +1409,7 @@ fun ThreadListItem(
                         onHorizontalDrag = { change, dragAmount ->
                             if (!isDeleting) {
                                 change.consume()
-                                offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
+                                offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.5f, 0f)
                             }
                         }
                     )
@@ -1590,7 +1740,7 @@ fun ConversationScreen(
                 TextButton(
                     onClick = {
                         if (dontWarnAgain) {
-                            archiveManager.setSkipThreadDeleteWarning(true)
+                            archiveManager.setSkipMessageDeleteWarning(true)
                         }
                         onDeleteMessages(listOf(msg.id))
                         messageToDeleteByTripleTap = null
@@ -1901,7 +2051,7 @@ fun ConversationScreen(
                         isInSelectionMode = inSelectionMode,
                         onToggleSelection = { onToggleMessageSelection(message.id) },
                         onTripleTapDelete = {
-                            if (archiveManager.shouldSkipThreadDeleteWarning()) {
+                            if (archiveManager.shouldSkipMessageDeleteWarning()) {
                                 onDeleteMessages(listOf(message.id))
                             } else {
                                 messageToDeleteByTripleTap = message
@@ -2827,6 +2977,14 @@ private fun sendMessage(context: Context, number: String, body: String) {
             put(Telephony.Sms.DATE, System.currentTimeMillis())
             put(Telephony.Sms.READ, 1)
             put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_OUTBOX)
+            try {
+                val threadId = Telephony.Threads.getOrCreateThreadId(context, number)
+                if (threadId > 0) {
+                    put(Telephony.Sms.THREAD_ID, threadId)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
         val uri = context.contentResolver.insert(Telephony.Sms.Outbox.CONTENT_URI, values)
 
@@ -2911,7 +3069,184 @@ private fun formatMinimalTimestamp(milliSeconds: Long): String {
 }
 
 // Core database queries performing asynchronous operations
-private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchivedIds: Set<Long>, deletedIds: Set<Long>, onlyDeleted: Boolean = false): List<SmsThread> {
+private fun queryAllThreads(
+    context: Context,
+    archivedIds: Set<Long>,
+    unarchivedIds: Set<Long>,
+    deletedIds: Set<Long>,
+    onlyDeleted: Boolean = false
+): List<SmsThread> {
+    val fromConversations = queryThreadsFromConversations(
+        context, archivedIds, unarchivedIds, deletedIds, onlyDeleted
+    )
+    if (fromConversations != null) return fromConversations
+    return queryThreadsFromSmsScan(context, archivedIds, unarchivedIds, deletedIds, onlyDeleted)
+}
+
+private fun queryThreadsFromConversations(
+    context: Context,
+    archivedIds: Set<Long>,
+    unarchivedIds: Set<Long>,
+    deletedIds: Set<Long>,
+    onlyDeleted: Boolean
+): List<SmsThread>? {
+    val uri = Uri.parse("content://mms-sms/conversations?simple=true")
+    val threadsList = mutableListOf<SmsThread>()
+    val contactCache = mutableMapOf<String, String>()
+    try {
+        val canonicalMap = loadCanonicalAddresses(context)
+        val unreadCounts = loadUnreadCounts(context)
+        context.contentResolver.query(uri, null, null, null, "date DESC")?.use { cursor ->
+            val idIndex = cursor.getColumnIndex("_id")
+            if (idIndex == -1) return null
+            val dateIndex = cursor.getColumnIndex("date")
+            val snippetIndex = cursor.getColumnIndex("snippet")
+            val recipientIndex = cursor.getColumnIndex("recipient_ids")
+            val archIndex = cursor.getColumnIndex("archived")
+
+            var rowCount = 0
+            var unresolved = 0
+            while (cursor.moveToNext()) {
+                rowCount++
+                val threadId = cursor.getLong(idIndex)
+                if (threadId <= 0L) continue
+                if (onlyDeleted) {
+                    if (!deletedIds.contains(threadId)) continue
+                } else if (deletedIds.contains(threadId)) {
+                    continue
+                }
+
+                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
+                val snippet = if (snippetIndex != -1) cursor.getString(snippetIndex).orEmpty() else ""
+                val recipientIds = if (recipientIndex != -1) cursor.getString(recipientIndex).orEmpty() else ""
+                val systemArchived = archIndex != -1 && cursor.getInt(archIndex) == 1
+
+                val address = resolveAddressFromRecipientIds(recipientIds, canonicalMap)
+                    ?: lookupLatestAddressForThread(context, threadId)
+                if (address.isNullOrBlank()) {
+                    unresolved++
+                    continue
+                }
+
+                val name = contactCache.getOrPut(address) {
+                    getContactName(context, address) ?: address
+                }
+                val isArchived =
+                    (archivedIds.contains(threadId) || systemArchived) && !unarchivedIds.contains(threadId)
+
+                threadsList.add(
+                    SmsThread(
+                        threadId = threadId,
+                        address = address,
+                        name = name,
+                        snippet = snippet,
+                        timestamp = date,
+                        unreadCount = unreadCounts[threadId] ?: 0,
+                        isArchived = isArchived
+                    )
+                )
+            }
+            if (rowCount > 0 && threadsList.isEmpty() && unresolved > 0) {
+                return null
+            }
+        } ?: return null
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return null
+    }
+    return threadsList.sortedByDescending { it.timestamp }
+}
+
+private fun loadCanonicalAddresses(context: Context): Map<Long, String> {
+    val map = mutableMapOf<Long, String>()
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://mms-sms/canonical-addresses"),
+            arrayOf("_id", "address"),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex("_id")
+            val addrIndex = cursor.getColumnIndex("address")
+            while (cursor.moveToNext()) {
+                if (idIndex == -1 || addrIndex == -1) continue
+                val address = cursor.getString(addrIndex) ?: continue
+                if (address.isNotBlank()) {
+                    map[cursor.getLong(idIndex)] = address
+                }
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return map
+}
+
+private fun resolveAddressFromRecipientIds(
+    recipientIds: String,
+    canonicalMap: Map<Long, String>
+): String? {
+    if (recipientIds.isBlank() || canonicalMap.isEmpty()) return null
+    val addresses = recipientIds.trim().split(Regex("\\s+")).mapNotNull { token ->
+        token.toLongOrNull()?.let { canonicalMap[it] }
+    }
+    return addresses.firstOrNull { it.isNotBlank() }
+}
+
+private fun lookupLatestAddressForThread(context: Context, threadId: Long): String? {
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://sms"),
+            arrayOf("address"),
+            "thread_id = ?",
+            arrayOf(threadId.toString()),
+            "date DESC"
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex("address")
+                if (index != -1) {
+                    val address = cursor.getString(index)
+                    if (!address.isNullOrBlank()) return address
+                }
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return null
+}
+
+private fun loadUnreadCounts(context: Context): Map<Long, Int> {
+    val map = mutableMapOf<Long, Int>()
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://sms/inbox"),
+            arrayOf("thread_id"),
+            "read = 0",
+            null,
+            null
+        )?.use { cursor ->
+            val index = cursor.getColumnIndex("thread_id")
+            while (cursor.moveToNext()) {
+                if (index == -1) continue
+                val threadId = cursor.getLong(index)
+                map[threadId] = (map[threadId] ?: 0) + 1
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return map
+}
+
+private fun queryThreadsFromSmsScan(
+    context: Context,
+    archivedIds: Set<Long>,
+    unarchivedIds: Set<Long>,
+    deletedIds: Set<Long>,
+    onlyDeleted: Boolean
+): List<SmsThread> {
     val threadsList = mutableListOf<SmsThread>()
     val uri = Uri.parse("content://sms")
     val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
@@ -2949,12 +3284,19 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
             val typeIndex = cursor.getColumnIndex("type")
 
             val tempMessages = mutableListOf<SmsMessage>()
-            // Limit on threads load to guarantee low RAM foot print & fast query execution times
-            var count = 0
-            while (cursor.moveToNext() && count < 800) {
-                val threadId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
+            while (cursor.moveToNext()) {
+                var threadId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
                 val address = if (addressIndex != -1) cursor.getString(addressIndex) ?: "Unknown" else "Unknown"
-                if (threadId == 0L || address == "Unknown") continue
+                if (address == "Unknown" || address.isBlank()) continue
+
+                if (threadId == 0L) {
+                    try {
+                        threadId = Telephony.Threads.getOrCreateThreadId(context, address)
+                    } catch (e: Exception) {
+                        // ignore
+                    }
+                }
+                if (threadId == 0L) continue
 
                 val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
                 val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
@@ -2963,7 +3305,6 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
                 val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
 
                 tempMessages.add(SmsMessage(id, threadId, address, body, date, read, type))
-                count++
             }
 
             val grouped = tempMessages.groupBy { it.threadId }
@@ -2973,11 +3314,11 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
                 } else {
                     if (deletedIds.contains(threadId)) continue
                 }
-                
+
                 val lastMsg = msgs.firstOrNull()
-                val address = msgs.firstOrNull { it.type == 1 }?.address 
-                    ?: msgs.firstOrNull { it.address.isNotEmpty() && it.address != "Unknown" }?.address 
-                    ?: lastMsg?.address 
+                val address = msgs.firstOrNull { it.type == 1 }?.address
+                    ?: msgs.firstOrNull { it.address.isNotEmpty() && it.address != "Unknown" }?.address
+                    ?: lastMsg?.address
                     ?: "Unknown"
 
                 val name = contactCache.getOrPut(address) {
@@ -3006,44 +3347,152 @@ private fun queryAllThreads(context: Context, archivedIds: Set<Long>, unarchived
     return threadsList.sortedByDescending { it.timestamp }
 }
 
-private fun queryMessagesForThread(context: Context, threadId: Long, deletedMessageIds: Set<Long>): List<SmsMessage> {
-    val messages = mutableListOf<SmsMessage>()
-    val uri = Uri.parse("content://sms")
+private fun findThreadForNotification(
+    threads: List<SmsThread>,
+    context: Context,
+    sender: String?,
+    threadId: Long
+): SmsThread? {
+    if (threadId > 0L) {
+        threads.find { it.threadId == threadId }?.let { return it }
+    }
+    if (!sender.isNullOrEmpty()) {
+        threads.find { it.address == sender }?.let { return it }
+        threads.find { PhoneNumberUtils.compare(it.address, sender) }?.let { return it }
+        try {
+            val resolved = Telephony.Threads.getOrCreateThreadId(context, sender)
+            if (resolved > 0L) {
+                threads.find { it.threadId == resolved }?.let { return it }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    return null
+}
+
+private fun queryMessagesForThread(
+    context: Context,
+    threadId: Long,
+    address: String? = null,
+    deletedMessageIds: Set<Long> = emptySet()
+): List<SmsMessage> {
+    val messagesMap = mutableMapOf<Long, SmsMessage>()
     val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
 
-    try {
-        context.contentResolver.query(
-            uri,
-            projection,
-            "thread_id = ?",
-            arrayOf(threadId.toString()),
-            "date ASC"
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndex("_id")
-            val threadIdIndex = cursor.getColumnIndex("thread_id")
-            val addressIndex = cursor.getColumnIndex("address")
-            val bodyIndex = cursor.getColumnIndex("body")
-            val dateIndex = cursor.getColumnIndex("date")
-            val readIndex = cursor.getColumnIndex("read")
-            val typeIndex = cursor.getColumnIndex("type")
+    fun extractMessagesFromCursor(cursor: Cursor?) {
+        cursor?.use { c ->
+            val idIndex = c.getColumnIndex("_id")
+            val threadIdIndex = c.getColumnIndex("thread_id")
+            val addressIndex = c.getColumnIndex("address")
+            val bodyIndex = c.getColumnIndex("body")
+            val dateIndex = c.getColumnIndex("date")
+            val readIndex = c.getColumnIndex("read")
+            val typeIndex = c.getColumnIndex("type")
 
-            while (cursor.moveToNext()) {
-                val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
-                if (deletedMessageIds.contains(id)) continue
-                val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else 0L
-                val address = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
-                val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
-                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
-                val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
-                val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
+            while (c.moveToNext()) {
+                val id = if (idIndex != -1) c.getLong(idIndex) else 0L
+                if (id == 0L || deletedMessageIds.contains(id)) continue
+                if (messagesMap.containsKey(id)) continue
 
-                messages.add(SmsMessage(id, tId, address, body, date, read, type))
+                val tId = if (threadIdIndex != -1) c.getLong(threadIdIndex) else threadId
+                val msgAddress = if (addressIndex != -1) c.getString(addressIndex) ?: "" else ""
+                val body = if (bodyIndex != -1) c.getString(bodyIndex) ?: "" else ""
+                val date = if (dateIndex != -1) c.getLong(dateIndex) else 0L
+                val read = if (readIndex != -1) c.getInt(readIndex) else 1
+                val type = if (typeIndex != -1) c.getInt(typeIndex) else 1
+
+                messagesMap[id] = SmsMessage(id, tId, msgAddress, body, date, read, type)
             }
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
     }
-    return messages
+
+    if (threadId > 0) {
+        try {
+            val cursor = context.contentResolver.query(
+                Uri.parse("content://sms"),
+                projection,
+                "thread_id = ?",
+                arrayOf(threadId.toString()),
+                "date ASC"
+            )
+            extractMessagesFromCursor(cursor)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    if (messagesMap.isEmpty() && !address.isNullOrEmpty() && address != "Unknown") {
+        try {
+            val cursor = context.contentResolver.query(
+                Uri.parse("content://sms"),
+                projection,
+                "address = ?",
+                arrayOf(address),
+                "date ASC"
+            )
+            extractMessagesFromCursor(cursor)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        if (messagesMap.isEmpty()) {
+            try {
+                val resolved = Telephony.Threads.getOrCreateThreadId(context, address)
+                if (resolved > 0L && resolved != threadId) {
+                    val cursor = context.contentResolver.query(
+                        Uri.parse("content://sms"),
+                        projection,
+                        "thread_id = ?",
+                        arrayOf(resolved.toString()),
+                        "date ASC"
+                    )
+                    extractMessagesFromCursor(cursor)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        if (messagesMap.isEmpty()) {
+            try {
+                context.contentResolver.query(
+                    Uri.parse("content://sms"),
+                    projection,
+                    null,
+                    null,
+                    "date DESC"
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndex("_id")
+                    val threadIdIndex = cursor.getColumnIndex("thread_id")
+                    val addressIndex = cursor.getColumnIndex("address")
+                    val bodyIndex = cursor.getColumnIndex("body")
+                    val dateIndex = cursor.getColumnIndex("date")
+                    val readIndex = cursor.getColumnIndex("read")
+                    val typeIndex = cursor.getColumnIndex("type")
+                    var scanned = 0
+                    while (cursor.moveToNext() && scanned < 2000) {
+                        scanned++
+                        val msgAddress = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
+                        if (msgAddress.isBlank()) continue
+                        if (msgAddress != address && !PhoneNumberUtils.compare(msgAddress, address)) continue
+                        val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
+                        if (id == 0L || deletedMessageIds.contains(id) || messagesMap.containsKey(id)) continue
+                        val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else threadId
+                        val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
+                        val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
+                        val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
+                        val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
+                        messagesMap[id] = SmsMessage(id, tId, msgAddress, body, date, read, type)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    return messagesMap.values.sortedBy { it.timestamp }
 }
 
 private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage>? {

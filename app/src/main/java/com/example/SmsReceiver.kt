@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -19,8 +20,12 @@ class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         const val CHANNEL_ID = "sms_receiver_channel"
+        const val EXTRA_SENDER_NUMBER = "sender_number"
+        const val EXTRA_THREAD_ID = "thread_id"
+        const val EXTRA_MESSAGE_ID = "message_id"
         private const val PREFS_NAME = "notification_prefs"
-        
+        private const val BIG_TEXT_LIMIT = 4000
+
         fun getNextNotificationId(context: Context): Int {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val currentId = prefs.getInt("counter", 1000)
@@ -68,11 +73,36 @@ class SmsReceiver : BroadcastReceiver() {
                 .remove("notif_id_$sender")
                 .apply()
         }
+
+        fun dismissSenderNotification(context: Context, sender: String) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val notifId = prefs.getInt("notif_id_$sender", -1)
+            if (notifId != -1) {
+                val notificationManager =
+                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.cancel(notifId)
+            }
+            clearSenderMessages(context, sender)
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_DELIVER_ACTION) return
 
+        val appContext = context.applicationContext
+        val pendingResult = goAsync()
+        Thread {
+            try {
+                handleIncomingSms(appContext, intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                pendingResult.finish()
+            }
+        }.start()
+    }
+
+    private fun handleIncomingSms(context: Context, intent: Intent) {
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         if (messages.isNullOrEmpty()) return
 
@@ -80,13 +110,25 @@ class SmsReceiver : BroadcastReceiver() {
         val body = messages.joinToString("") { it.displayMessageBody ?: "" }
         val timestamp = messages[0].timestampMillis
 
-        // 1. Write SMS to Telephony ContentProvider inbox (Default SMS app responsibility)
+        var threadId = 0L
+        try {
+            threadId = Telephony.Threads.getOrCreateThreadId(context, sender)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        if (threadId > 0) {
+            restoreIncomingConversation(context, threadId)
+        }
+
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, sender)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, timestamp)
-            put(Telephony.Sms.READ, 0) // Mark as unread
+            put(Telephony.Sms.READ, 0)
             put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_INBOX)
+            if (threadId > 0) {
+                put(Telephony.Sms.THREAD_ID, threadId)
+            }
         }
 
         var insertedUri: Uri? = null
@@ -95,15 +137,19 @@ class SmsReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        if (insertedUri == null) {
+            try {
+                insertedUri = context.contentResolver.insert(Uri.parse("content://sms"), values)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
-        val smsUriString = insertedUri?.toString() ?: ""
-
-        // 2. OTP extraction
         val otp = extractOTP(body)
 
         val messageId = insertedUri?.let { uri ->
             try {
-                android.content.ContentUris.parseId(uri)
+                ContentUris.parseId(uri)
             } catch (e: Exception) {
                 uri.lastPathSegment?.toLongOrNull()
             }
@@ -113,7 +159,6 @@ class SmsReceiver : BroadcastReceiver() {
             scheduleOtpAutoDelete(context, messageId)
         }
 
-        // 3. Debit detection + auto-log
         var debitId: Long? = null
         var debitAmountPaise: Long? = null
         if (messageId != null) {
@@ -132,17 +177,15 @@ class SmsReceiver : BroadcastReceiver() {
             }
         }
 
-        // 4. Query contact display name or fallback to number
         val displayName = getContactName(context, sender) ?: sender
 
-        // 5. Trigger system notification with action buttons
         showSmsNotification(
             context = context,
             sender = sender,
             displayName = displayName,
             body = body,
             otp = otp,
-            smsUriString = smsUriString,
+            threadId = threadId,
             messageId = messageId,
             debitId = debitId,
             debitAmountPaise = debitAmountPaise
@@ -182,29 +225,22 @@ class SmsReceiver : BroadcastReceiver() {
 
     private fun extractOTP(body: String): String? {
         val lowercaseBody = body.lowercase()
-        // Conservative keywords — only flag when SMS is clearly an OTP.
-        // False negatives (missed OTP) are fine — message just won't auto-delete.
-        val keywords = listOf("otp", "time password", "time pin", "code")
-        var hasKeyword = keywords.any { lowercaseBody.contains(it) }
-        
-        // Refinement: If it only matched "code", filter out common false positives like "zip code", "promo code"
-        if (hasKeyword && !lowercaseBody.contains("otp") && !lowercaseBody.contains("time password") && !lowercaseBody.contains("time pin")) {
-            val falsePositives = listOf("zip code", "promo code", "postal code", "error code", "discount code", "coupon code", "bar code", "qr code", "booking code", "pin code")
-            if (falsePositives.any { lowercaseBody.contains(it) }) {
-                hasKeyword = false
-            }
-        }
-        if (!hasKeyword) return null
+        val strongKeywords = listOf(
+            "otp",
+            "one time password",
+            "one-time password",
+            "verification code",
+            "one time pin",
+            "one-time pin"
+        )
+        if (strongKeywords.none { lowercaseBody.contains(it) }) return null
 
-        // Match numeric sequences of 4 to 8 digits
         val digitPattern = Regex("\\b\\d{4,8}\\b")
         val matches = digitPattern.findAll(body).map { it.value }.toList()
         if (matches.isNotEmpty()) {
-            // Find most likely candidate: prefers 6 digit OTP (universal standard)
             return matches.find { it.length == 6 } ?: matches.first()
         }
 
-        // Alphanumeric fallback patterns like "code is XJ432" or "code: Y7U9"
         val alphaPattern = Regex("(?i)\\b(?:code|otp)\\s*[:= ]\\s*([a-zA-Z0-9]{4,8})\\b")
         val alphaMatch = alphaPattern.find(body)
         if (alphaMatch != null) {
@@ -250,14 +286,13 @@ class SmsReceiver : BroadcastReceiver() {
         displayName: String,
         body: String,
         otp: String?,
-        smsUriString: String,
+        threadId: Long,
         messageId: Long?,
         debitId: Long?,
         debitAmountPaise: Long?
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        
-        // Ensure channel exits
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -273,12 +308,20 @@ class SmsReceiver : BroadcastReceiver() {
 
         val notifId = getNotificationIdForSender(context, sender)
         val allMessages = storeAndGetSenderMessages(context, sender, body)
-        val combinedText = allMessages.joinToString("\n")
+        val combinedText = allMessages.joinToString("\n\n")
+        val bigText = if (combinedText.length > BIG_TEXT_LIMIT) {
+            combinedText.takeLast(BIG_TEXT_LIMIT)
+        } else {
+            combinedText
+        }
 
-        // Create intent to open application main layout
         val mainIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("sender_number", sender)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_SENDER_NUMBER, sender)
+            if (threadId > 0) putExtra(EXTRA_THREAD_ID, threadId)
+            if (messageId != null && messageId > 0) putExtra(EXTRA_MESSAGE_ID, messageId)
         }
         val mainPendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -287,7 +330,6 @@ class SmsReceiver : BroadcastReceiver() {
         }
         val mainPendingIntent = PendingIntent.getActivity(context, notifId, mainIntent, mainPendingFlags)
 
-        // Set up delete / dismiss intent when user clears or dismisses notification
         val dismissIntent = Intent(context, NotificationActionReceiver::class.java).apply {
             action = NotificationActionReceiver.ACTION_DISMISS
             putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
@@ -299,19 +341,15 @@ class SmsReceiver : BroadcastReceiver() {
         }
         val dismissPendingIntent = PendingIntent.getBroadcast(context, notifId + 3, dismissIntent, dismissPendingFlags)
 
-        val truncatedCombinedText = if (combinedText.length > 1000) combinedText.take(1000) else combinedText
-
-        val inboxStyle = NotificationCompat.InboxStyle()
+        val bigTextStyle = NotificationCompat.BigTextStyle()
             .setBigContentTitle(displayName)
-        for (msg in allMessages) {
-            inboxStyle.addLine(msg)
-        }
+            .bigText(bigText)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_chat)
             .setContentTitle(displayName)
             .setContentText(allMessages.lastOrNull() ?: "")
-            .setStyle(inboxStyle)
+            .setStyle(bigTextStyle)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(mainPendingIntent)
@@ -325,7 +363,6 @@ class SmsReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT
         }
 
-        // 1. Copy OTP Action (if parsed successfully)
         if (!otp.isNullOrEmpty()) {
             val copyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_COPY_OTP
@@ -341,7 +378,6 @@ class SmsReceiver : BroadcastReceiver() {
             )
         }
 
-        // 2. Finance actions for debit SMS
         if (debitId != null && debitAmountPaise != null && messageId != null) {
             val categorizeIntent = Intent(context, CategorizeOverlayActivity::class.java).apply {
                 putExtra(CategorizeOverlayActivity.EXTRA_DEBIT_ID, debitId)
@@ -379,22 +415,6 @@ class SmsReceiver : BroadcastReceiver() {
                 0,
                 "Don't Track",
                 dontTrackPendingIntent
-            )
-        }
-
-        // 3. Delete SMS Action
-        if (smsUriString.isNotEmpty()) {
-            val deleteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-                action = NotificationActionReceiver.ACTION_DELETE_SMS
-                putExtra(NotificationActionReceiver.EXTRA_SMS_URI, smsUriString)
-                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
-                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
-            }
-            val deletePendingIntent = PendingIntent.getBroadcast(context, notifId + 2, deleteIntent, actionFlags)
-            builder.addAction(
-                0, // 0 handles platform-native minimalist styling
-                "DELETE MESSAGE",
-                deletePendingIntent
             )
         }
 
