@@ -185,6 +185,7 @@ class SmsReceiver : BroadcastReceiver() {
             displayName = displayName,
             body = body,
             otp = otp,
+            smsUriString = insertedUri?.toString().orEmpty(),
             threadId = threadId,
             messageId = messageId,
             debitId = debitId,
@@ -286,6 +287,7 @@ class SmsReceiver : BroadcastReceiver() {
         displayName: String,
         body: String,
         otp: String?,
+        smsUriString: String,
         threadId: Long,
         messageId: Long?,
         debitId: Long?,
@@ -415,6 +417,21 @@ class SmsReceiver : BroadcastReceiver() {
                 0,
                 "Don't Track",
                 dontTrackPendingIntent
+            )
+        }
+
+        if (smsUriString.isNotEmpty()) {
+            val deleteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_DELETE_SMS
+                putExtra(NotificationActionReceiver.EXTRA_SMS_URI, smsUriString)
+                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
+            }
+            val deletePendingIntent = PendingIntent.getBroadcast(context, notifId + 2, deleteIntent, actionFlags)
+            builder.addAction(
+                0,
+                "DELETE MESSAGE",
+                deletePendingIntent
             )
         }
 

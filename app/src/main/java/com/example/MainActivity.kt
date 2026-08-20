@@ -30,6 +30,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -80,6 +81,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.graphicsLayer
@@ -457,8 +460,6 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
     var newMessageText by remember { mutableStateOf("") }
     var chatMessageText by remember { mutableStateOf("") }
 
-    var threadPendingDelete by remember { mutableStateOf<SmsThread?>(null) }
-
     BackHandler(enabled = activeThread != null || isNewMessageOpen || isDeletedFolderOpen || isStarredFolderOpen || selectedMessageIds.isNotEmpty()) {
         if (selectedMessageIds.isNotEmpty()) {
             selectedMessageIds = emptySet()
@@ -684,87 +685,6 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
     }
 
     // Note: threadToDelete AlertDialog has been removed in favor of direct soft deletion
-
-    if (threadPendingDelete != null) {
-        val pending = threadPendingDelete!!
-        var dontWarnAgain by remember { mutableStateOf(false) }
-        AlertDialog(
-            onDismissRequest = { threadPendingDelete = null },
-            containerColor = Color(0xFF161821),
-            title = {
-                Text(
-                    text = "DELETE CONVERSATION?",
-                    color = PureWhite,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.sp
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "Move this conversation to Recently Deleted? It will be permanently removed after 6 hours.",
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable { dontWarnAgain = !dontWarnAgain }
-                    ) {
-                        Checkbox(
-                            checked = dontWarnAgain,
-                            onCheckedChange = { dontWarnAgain = it },
-                            colors = CheckboxDefaults.colors(
-                                checkedColor = Color(0xFF4086FF),
-                                uncheckedColor = TextSecondary,
-                                checkmarkColor = PureWhite
-                            )
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Don't warn again",
-                            color = TextSecondary,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (dontWarnAgain) {
-                            archiveManager.setSkipThreadDeleteWarning(true)
-                        }
-                        deleteManager.softDeleteThread(pending.threadId)
-                        deletedIds = deleteManager.getDeletedThreads().keys
-                        threadPendingDelete = null
-                        refreshCounter++
-                    }
-                ) {
-                    Text(
-                        text = "[ DELETE ]",
-                        color = Color(0xFFFF453A),
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { threadPendingDelete = null }) {
-                    Text(
-                        text = "[ CANCEL ]",
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-            }
-        )
-    }
 
     val mainBackgroundGradient = Brush.verticalGradient(
         colors = listOf(
@@ -1017,13 +937,9 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                         unarchivedIds = archiveManager.getUnarchivedThreadIds()
                     },
                     onThreadDelete = { thread ->
-                        if (archiveManager.shouldSkipThreadDeleteWarning()) {
-                            deleteManager.softDeleteThread(thread.threadId)
-                            deletedIds = deleteManager.getDeletedThreads().keys
-                            refreshCounter++
-                        } else {
-                            threadPendingDelete = thread
-                        }
+                        deleteManager.softDeleteThread(thread.threadId)
+                        deletedIds = deleteManager.getDeletedThreads().keys
+                        refreshCounter++
                     },
                     onOpenDeletedFolder = { isDeletedFolderOpen = true },
                     onOpenStarredFolder = { isStarredFolderOpen = true },
@@ -1223,10 +1139,19 @@ fun MainThreadsScreen(
                     .background(Color(0xFF1E2027))
             )
 
+            val flingBehavior = PagerDefaults.flingBehavior(
+                state = pagerState,
+                pagerSnapDistance = PagerSnapDistance.atMost(1),
+                snapAnimationSpec = tween(
+                    durationMillis = 200,
+                    easing = FastOutSlowInEasing
+                )
+            )
+
             // HorizontalPager allowing Horizontal Swiping between Tabs
             HorizontalPager(
                 state = pagerState,
-                userScrollEnabled = false,
+                flingBehavior = flingBehavior,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -1363,7 +1288,7 @@ fun ThreadListItem(
                 .background(Color(0xFF2C0F14))
                 .border(1.dp, Color(0xFFFF453A).copy(alpha = 0.25f), RoundedCornerShape(16.dp))
                 .padding(horizontal = 20.dp),
-            contentAlignment = Alignment.CenterEnd
+            contentAlignment = if (offsetX < 0) Alignment.CenterEnd else Alignment.CenterStart
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1392,13 +1317,8 @@ fun ThreadListItem(
                 .pointerInput(thread.threadId) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (offsetX < -swipeThresholdPx) {
-                                if (isDeleted) {
-                                    isDeleting = true
-                                } else {
-                                    offsetX = 0f
-                                    onDelete()
-                                }
+                            if (offsetX < -swipeThresholdPx || offsetX > swipeThresholdPx) {
+                                isDeleting = true
                             } else {
                                 offsetX = 0f
                             }
@@ -1409,7 +1329,7 @@ fun ThreadListItem(
                         onHorizontalDrag = { change, dragAmount ->
                             if (!isDeleting) {
                                 change.consume()
-                                offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.5f, 0f)
+                                offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.5f, swipeThresholdPx * 1.5f)
                             }
                         }
                     )
@@ -2148,128 +2068,242 @@ fun MessageBubbleItem(
     onDoubleTapStar: () -> Unit,
     fontSizeMultiplier: Float = 1.0f
 ) {
+    val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     val isMe = message.type == 2 // 2 corresponds to SENT folder type
 
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var tapCount by remember { mutableIntStateOf(0) }
+    val suggestions = remember(message.body) { CopySuggestionsParser.extract(message.body) }
 
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically
+        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
     ) {
-        if (isInSelectionMode) {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "Selection Status Indicator",
-                tint = if (isSelected) Color(0xFF00E5FF) else Color(0xFF232630),
-                modifier = Modifier
-                    .size(18.dp)
-                    .clickable { onToggleSelection() }
-                    .padding(end = 6.dp)
-            )
-        }
-        
-        val bubbleGradient = if (isMe) {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF3265E9), // Modern Electric Blue
-                    Color(0xFF1E3BB2)  // Soft Navy Depth
-                )
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF161821), // Soft Card Obsidian
-                    Color(0xFF0F1116)
-                )
-            )
-        }
-
-        val bubbleOutline = when {
-            isSelected -> Color(0xFF00E5FF)
-            isMe -> Color(0x30FFFFFF)
-            else -> Color(0xFF232630)
-        }
-
-        Box(
-            modifier = Modifier
-                .pointerInput(message.id) {
-                    detectTapGestures(
-                        onTap = {
-                            if (isInSelectionMode) {
-                                onToggleSelection()
-                            } else {
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastTapTime < 450) {
-                                    tapCount++
-                                } else {
-                                    tapCount = 1
-                                }
-                                lastTapTime = currentTime
-                                if (tapCount == 2) {
-                                    onDoubleTapStar()
-                                }
-                                if (tapCount >= 3) {
-                                    onTripleTapDelete()
-                                    tapCount = 0
-                                }
-                            }
-                        },
-                        onLongPress = {
-                            onToggleSelection()
-                        }
-                    )
-                }
-                .widthIn(max = 290.dp)
-                .clip(
-                    RoundedCornerShape(
-                        topStart = 16.dp,
-                        topEnd = 16.dp,
-                        bottomStart = if (isMe) 16.dp else 4.dp,
-                        bottomEnd = if (isMe) 4.dp else 16.dp
-                    )
-                )
-                .background(bubbleGradient)
-                .border(
-                    if (isSelected) 2.dp else 1.dp,
-                    bubbleOutline,
-                    shape = RoundedCornerShape(
-                        topStart = 16.dp,
-                        topEnd = 16.dp,
-                        bottomStart = if (isMe) 16.dp else 4.dp,
-                        bottomEnd = if (isMe) 4.dp else 16.dp
-                    )
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                LinkableText(
-                    text = message.body,
-                    fontSizeMultiplier = fontSizeMultiplier
+            if (isInSelectionMode) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "Selection Status Indicator",
+                    tint = if (isSelected) Color(0xFF00E5FF) else Color(0xFF232630),
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { onToggleSelection() }
+                        .padding(end = 6.dp)
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.align(Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (isStarred) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = "Starred",
-                            tint = Color(0xFFFFD700),
-                            modifier = Modifier.size(10.dp)
+            }
+            
+            val bubbleGradient = if (isMe) {
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF3265E9), // Modern Electric Blue
+                        Color(0xFF1E3BB2)  // Soft Navy Depth
+                    )
+                )
+            } else {
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF161821), // Soft Card Obsidian
+                        Color(0xFF0F1116)
+                    )
+                )
+            }
+
+            val bubbleOutline = when {
+                isSelected -> Color(0xFF00E5FF)
+                isMe -> Color(0x30FFFFFF)
+                else -> Color(0xFF232630)
+            }
+
+            Box(
+                modifier = Modifier
+                    .pointerInput(message.id) {
+                        detectTapGestures(
+                            onTap = {
+                                if (isInSelectionMode) {
+                                    onToggleSelection()
+                                } else {
+                                    val currentTime = System.currentTimeMillis()
+                                    if (currentTime - lastTapTime < 450) {
+                                        tapCount++
+                                    } else {
+                                        tapCount = 1
+                                    }
+                                    lastTapTime = currentTime
+                                    if (tapCount == 2) {
+                                        onDoubleTapStar()
+                                    }
+                                    if (tapCount >= 3) {
+                                        onTripleTapDelete()
+                                        tapCount = 0
+                                    }
+                                }
+                            },
+                            onLongPress = {
+                                onToggleSelection()
+                            }
                         )
                     }
-                    Text(
-                        text = formatMessageTime(message.timestamp),
-                        fontSize = 8.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (isMe) PureWhite.copy(alpha = 0.7f) else TextSecondary.copy(alpha = 0.7f)
+                    .widthIn(max = 290.dp)
+                    .clip(
+                        RoundedCornerShape(
+                            topStart = 16.dp,
+                            topEnd = 16.dp,
+                            bottomStart = if (isMe) 16.dp else 4.dp,
+                            bottomEnd = if (isMe) 4.dp else 16.dp
+                        )
                     )
+                    .background(bubbleGradient)
+                    .border(
+                        if (isSelected) 2.dp else 1.dp,
+                        bubbleOutline,
+                        shape = RoundedCornerShape(
+                            topStart = 16.dp,
+                            topEnd = 16.dp,
+                            bottomStart = if (isMe) 16.dp else 4.dp,
+                            bottomEnd = if (isMe) 4.dp else 16.dp
+                        )
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Column {
+                    LinkableText(
+                        text = message.body,
+                        fontSizeMultiplier = fontSizeMultiplier
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isStarred) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "Starred",
+                                tint = Color(0xFFFFD700),
+                                modifier = Modifier.size(10.dp)
+                            )
+                        }
+                        Text(
+                            text = formatMessageTime(message.timestamp),
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (isMe) PureWhite.copy(alpha = 0.7f) else TextSecondary.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
+        }
+
+        // Copy Suggestions Section below the message bubble
+        if (suggestions.isNotEmpty() && !isInSelectionMode) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = if (isMe) 24.dp else 8.dp,
+                        end = if (isMe) 8.dp else 24.dp
+                    ),
+                horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(bottom = 4.dp, start = if (isMe) 0.dp else 2.dp, end = if (isMe) 2.dp else 0.dp)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_content_copy),
+                        contentDescription = "Copy suggestions icon",
+                        tint = TextSecondary.copy(alpha = 0.75f),
+                        modifier = Modifier.size(10.dp)
+                    )
+                    Text(
+                        text = "Copy Suggestions",
+                        fontSize = (9 * fontSizeMultiplier).sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TextSecondary.copy(alpha = 0.75f),
+                        letterSpacing = 0.5.sp
+                    )
+                }
+
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+                    contentPadding = PaddingValues(vertical = 2.dp)
+                ) {
+                    items(suggestions) { item ->
+                        CopySuggestionChip(
+                            text = item,
+                            fontSizeMultiplier = fontSizeMultiplier,
+                            onClick = {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(item))
+                                Toast.makeText(context, "COPIED: $item", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CopySuggestionChip(
+    text: String,
+    fontSizeMultiplier: Float = 1.0f,
+    onClick: () -> Unit
+) {
+    val isUrl = text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true) || text.startsWith("www.", ignoreCase = true)
+    val isHashtag = text.startsWith("#")
+
+    val chipBorderColor = when {
+        isUrl -> Color(0x404086FF)
+        isHashtag -> Color(0x4000E5FF)
+        else -> Color(0xFF282B37)
+    }
+
+    val chipBg = Color(0xFF14161E)
+    val textColor = when {
+        isUrl -> Color(0xFF64B5F6)
+        isHashtag -> Color(0xFF00E5FF)
+        else -> PureWhite.copy(alpha = 0.9f)
+    }
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(chipBg)
+            .border(1.dp, chipBorderColor, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_content_copy),
+                contentDescription = "Copy",
+                tint = textColor.copy(alpha = 0.6f),
+                modifier = Modifier.size(9.dp)
+            )
+            Text(
+                text = text,
+                fontSize = (10 * fontSizeMultiplier).sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Medium,
+                color = textColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
