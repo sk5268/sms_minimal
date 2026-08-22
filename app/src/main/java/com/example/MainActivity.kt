@@ -382,19 +382,61 @@ private fun permanentlyDeleteThread(context: Context, threadId: Long): Boolean {
     }
 }
 
-private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
-    var deletedAny = false
+fun deleteSmsById(context: Context, messageId: Long): Boolean {
+    if (messageId <= 0L) return false
     try {
-        for (id in ids) {
-            val rows = context.contentResolver.delete(
-                Uri.parse("content://sms/$id"),
-                null,
-                null
-            )
-            if (rows > 0) deletedAny = true
+        val rows = context.contentResolver.delete(
+            Uri.parse("content://sms/$messageId"),
+            null,
+            null
+        )
+        if (rows > 0) return true
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    try {
+        val rows = context.contentResolver.delete(
+            Telephony.Sms.CONTENT_URI,
+            "_id = ?",
+            arrayOf(messageId.toString())
+        )
+        if (rows > 0) return true
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return false
+}
+
+fun deleteLatestInboxFromSender(context: Context, sender: String): Boolean {
+    if (sender.isBlank()) return false
+    try {
+        context.contentResolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI,
+            arrayOf("_id", "address"),
+            null,
+            null,
+            "date DESC"
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex("_id")
+            val addressIndex = cursor.getColumnIndex("address")
+            while (cursor.moveToNext()) {
+                val address = if (addressIndex != -1) cursor.getString(addressIndex).orEmpty() else ""
+                val matches = address == sender || PhoneNumberUtils.compare(address, sender)
+                if (!matches) continue
+                val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
+                if (deleteSmsById(context, id)) return true
+            }
         }
     } catch (e: Exception) {
         e.printStackTrace()
+    }
+    return false
+}
+
+private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
+    var deletedAny = false
+    for (id in ids) {
+        if (deleteSmsById(context, id)) deletedAny = true
     }
     return deletedAny
 }

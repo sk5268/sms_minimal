@@ -420,10 +420,11 @@ class SmsReceiver : BroadcastReceiver() {
             )
         }
 
-        if (smsUriString.isNotEmpty()) {
+        if (smsUriString.isNotEmpty() || (messageId != null && messageId > 0L)) {
             val deleteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_DELETE_SMS
                 putExtra(NotificationActionReceiver.EXTRA_SMS_URI, smsUriString)
+                putExtra(NotificationActionReceiver.EXTRA_SMS_MESSAGE_ID, messageId ?: -1L)
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
                 putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }

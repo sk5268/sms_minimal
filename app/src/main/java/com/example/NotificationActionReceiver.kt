@@ -4,9 +4,12 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import com.example.finance.FinanceRepository
 import kotlinx.coroutines.runBlocking
@@ -32,46 +35,41 @@ class NotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, -1)
+        val appContext = context.applicationContext
 
         when (action) {
             ACTION_COPY_OTP -> {
                 val otp = intent.getStringExtra(EXTRA_OTP)
                 if (!otp.isNullOrEmpty()) {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("OTP", otp)
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "OTP Copied", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(appContext, "OTP Copied", Toast.LENGTH_SHORT).show()
                 }
-                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
+                dismissSenderNotification(appContext, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
             ACTION_DELETE_SMS -> {
-                val uriString = intent.getStringExtra(EXTRA_SMS_URI)
-                if (!uriString.isNullOrEmpty()) {
+                val pendingResult = goAsync()
+                Thread {
                     try {
-                        val uri = Uri.parse(uriString)
-                        val messageId = try {
-                            android.content.ContentUris.parseId(uri)
-                        } catch (e: Exception) {
-                            uri.lastPathSegment?.toLongOrNull()
-                        }
-                        if (messageId != null) {
-                            val deleteManager = DeleteManager(context)
-                            deleteManager.softDeleteMessage(messageId)
-                            Toast.makeText(context, "SMS Deleted", Toast.LENGTH_SHORT).show()
-                        } else {
-                            val deletedRows = context.contentResolver.delete(uri, null, null)
-                            if (deletedRows > 0) {
-                                Toast.makeText(context, "SMS Deleted", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Cleared from database", Toast.LENGTH_SHORT).show()
-                            }
+                        val deleted = deleteSmsFromNotification(appContext, intent)
+                        Handler(Looper.getMainLooper()).post {
+                            Toast.makeText(
+                                appContext,
+                                if (deleted) "SMS Deleted" else "Delete failed",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        Toast.makeText(context, "Delete failed", Toast.LENGTH_SHORT).show()
+                        Handler(Looper.getMainLooper()).post {
+                            Toast.makeText(appContext, "Delete failed", Toast.LENGTH_SHORT).show()
+                        }
+                    } finally {
+                        dismissSenderNotification(appContext, intent.getStringExtra(EXTRA_SENDER), notifId)
+                        pendingResult.finish()
                     }
-                }
-                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
+                }.start()
             }
             ACTION_CATEGORIZE -> {
                 val debitId = intent.getLongExtra(EXTRA_DEBIT_ID, -1L)
@@ -80,7 +78,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val snippet = intent.getStringExtra(EXTRA_SNIPPET).orEmpty()
                 if (debitId > 0L) {
                     CategorizeOverlayActivity.start(
-                        context = context,
+                        context = appContext,
                         debitId = debitId,
                         amountPaise = amountPaise,
                         sender = sender,
@@ -93,20 +91,46 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val smsMessageId = intent.getLongExtra(EXTRA_SMS_MESSAGE_ID, -1L)
                 if (smsMessageId > 0L) {
                     runBlocking {
-                        FinanceRepository.getInstance(context).dontTrack(smsMessageId)
+                        FinanceRepository.getInstance(appContext).dontTrack(smsMessageId)
                     }
-                    Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(appContext, "Removed from finance", Toast.LENGTH_SHORT).show()
                 }
-                dismissSenderNotification(context, intent.getStringExtra(EXTRA_SENDER), notifId)
+                dismissSenderNotification(appContext, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
             ACTION_DISMISS -> {
-                // Swipe/clear: notification is already gone; only drop the merge cache.
                 val sender = intent.getStringExtra(EXTRA_SENDER)
                 if (!sender.isNullOrEmpty()) {
-                    SmsReceiver.clearSenderMessages(context, sender)
+                    SmsReceiver.clearSenderMessages(appContext, sender)
                 }
             }
         }
+    }
+
+    private fun deleteSmsFromNotification(context: Context, intent: Intent): Boolean {
+        var messageId = intent.getLongExtra(EXTRA_SMS_MESSAGE_ID, -1L)
+        if (messageId <= 0L) {
+            val uriString = intent.getStringExtra(EXTRA_SMS_URI)
+            if (!uriString.isNullOrEmpty()) {
+                val uri = Uri.parse(uriString)
+                messageId = try {
+                    ContentUris.parseId(uri)
+                } catch (e: Exception) {
+                    uri.lastPathSegment?.toLongOrNull() ?: -1L
+                }
+            }
+        }
+
+        var deleted = false
+        if (messageId > 0L) {
+            deleted = deleteSmsById(context, messageId)
+            DeleteManager(context).softDeleteMessage(messageId)
+        }
+
+        val sender = intent.getStringExtra(EXTRA_SENDER)
+        if (!deleted && !sender.isNullOrEmpty()) {
+            deleted = deleteLatestInboxFromSender(context, sender)
+        }
+        return deleted
     }
 
     private fun dismissSenderNotification(context: Context, sender: String?, notifId: Int) {
