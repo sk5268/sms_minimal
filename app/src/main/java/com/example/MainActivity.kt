@@ -1333,21 +1333,23 @@ fun MainThreadsScreen(
             )
         )
 
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(bottom = 28.dp, end = 24.dp)
-                .size(60.dp)
-                .background(fabGradient, RoundedCornerShape(30.dp))
-                .clickable { onComposeClick() },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Create,
-                contentDescription = "New SMS",
-                tint = Color(0xFF07080B), // Deep dark black contrast print
-                modifier = Modifier.size(24.dp)
-            )
+        if (pagerState.currentPage != 2) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 28.dp, end = 24.dp)
+                    .size(60.dp)
+                    .background(fabGradient, RoundedCornerShape(30.dp))
+                    .clickable { onComposeClick() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Create,
+                    contentDescription = "New SMS",
+                    tint = Color(0xFF07080B), // Deep dark black contrast print
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
     }
 }

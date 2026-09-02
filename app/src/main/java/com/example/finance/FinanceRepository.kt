@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.util.Calendar
+import java.util.UUID
 
 data class FinanceStats(
     val monthTotalPaise: Long,
@@ -95,7 +96,72 @@ class FinanceRepository(context: Context) {
 
     suspend fun dontTrackByDebitId(debitId: Long) {
         val debit = dao.getDebitById(debitId) ?: return
+        if (debit.isManualEntry()) {
+            dao.deleteDebitById(debitId)
+            return
+        }
         dontTrack(debit.messageKey)
+    }
+
+    suspend fun addManualDebit(
+        amountPaise: Long,
+        note: String,
+        payee: String = "Cash",
+        categoryId: Long? = null,
+        occurredAt: Long = System.currentTimeMillis()
+    ): Long? {
+        ensureSeeded()
+        if (amountPaise <= 0L) return null
+        val snippet = note.trim().ifBlank { "Manual entry" }
+        val sender = payee.trim().ifBlank { "Cash" }
+        val messageKey = "manual:${UUID.randomUUID()}"
+        val resolvedCategoryId = categoryId ?: run {
+            val match = autoCategorizer.resolveCategory(sender, snippet)
+            match.categoryId
+        }
+        val debit = DebitEntity(
+            messageKey = messageKey,
+            amountPaise = amountPaise,
+            sender = sender,
+            snippet = snippet,
+            categoryId = resolvedCategoryId,
+            occurredAt = occurredAt,
+            autoCategorized = categoryId == null
+        )
+        val rowId = dao.insertDebit(debit)
+        return if (rowId > 0L) rowId else dao.getDebitByMessageKey(messageKey)?.id
+    }
+
+    suspend fun updateManualDebit(
+        debitId: Long,
+        amountPaise: Long,
+        note: String,
+        payee: String,
+        categoryId: Long,
+        occurredAt: Long
+    ): Boolean {
+        val debit = dao.getDebitById(debitId) ?: return false
+        if (!debit.isManualEntry() || amountPaise <= 0L) return false
+        val snippet = note.trim().ifBlank { "Manual entry" }
+        val sender = payee.trim().ifBlank { "Cash" }
+        dao.updateDebit(
+            debit.copy(
+                amountPaise = amountPaise,
+                sender = sender,
+                snippet = snippet,
+                categoryId = categoryId,
+                occurredAt = occurredAt,
+                autoCategorized = false
+            )
+        )
+        return true
+    }
+
+    suspend fun deleteManualDebit(debitId: Long): Boolean {
+        val debit = dao.getDebitById(debitId) ?: return false
+        if (!debit.isManualEntry()) return false
+        dao.deleteDebitById(debitId)
+        return true
     }
 
     suspend fun addCategory(name: String, colorArgb: Int): Long {

@@ -19,3 +19,5 @@ data class DebitEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val autoCategorized: Boolean = false
 )
+
+fun DebitEntity.isManualEntry(): Boolean = messageKey.startsWith("manual:")

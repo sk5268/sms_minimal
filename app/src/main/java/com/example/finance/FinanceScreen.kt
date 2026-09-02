@@ -12,20 +12,21 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -40,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -50,10 +52,10 @@ import androidx.compose.ui.unit.sp
 import com.example.formatRupees
 import com.example.ui.theme.AccentBlue
 import com.example.ui.theme.AccentGreen
-import com.example.ui.theme.AccentOrange
 import com.example.ui.theme.AccentRed
-import com.example.ui.theme.OLEDBlack
-import com.example.ui.theme.PureWhite
+import com.example.ui.theme.BorderColor
+import com.example.ui.theme.DarkSurface
+import com.example.ui.theme.DarkSurfaceElevated
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +86,30 @@ private fun monthDayStartsBetween(monthStartMs: Long, monthEndMs: Long): List<Lo
     return days
 }
 
+private fun previousMonth(year: Int, month: Int): Pair<Int, Int> {
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.YEAR, year)
+        set(Calendar.MONTH, month)
+        add(Calendar.MONTH, -1)
+    }
+    return cal.get(Calendar.YEAR) to cal.get(Calendar.MONTH)
+}
+
+private fun monthOverMonthLabel(
+    currentTotal: Long,
+    prevTotal: Long,
+    prevMonthName: String
+): String? {
+    if (prevTotal <= 0L && currentTotal <= 0L) return null
+    if (prevTotal <= 0L) return "First month with spending"
+    val delta = ((currentTotal - prevTotal).toDouble() / prevTotal * 100).toInt()
+    return when {
+        delta > 0 -> "↑ $delta% vs $prevMonthName"
+        delta < 0 -> "↓ ${-delta}% vs $prevMonthName"
+        else -> "Same as $prevMonthName"
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FinanceScreen() {
@@ -94,10 +120,13 @@ fun FinanceScreen() {
     val categories by repo.observeCategories().collectAsState(initial = emptyList())
     val debits by repo.observeDebits().collectAsState(initial = emptyList())
     var stats by remember { mutableStateOf<FinanceStats?>(null) }
+    var prevMonthStats by remember { mutableStateOf<FinanceStats?>(null) }
     var isScanning by remember { mutableStateOf(false) }
     var showManage by remember { mutableStateOf(false) }
     var showAddCategory by remember { mutableStateOf(false) }
     var recategorizeDebit by remember { mutableStateOf<DebitEntity?>(null) }
+    var editManualDebit by remember { mutableStateOf<DebitEntity?>(null) }
+    var showAddDebit by remember { mutableStateOf(false) }
     var newCategoryName by remember { mutableStateOf("") }
     var isRecentDebitsExpanded by remember { mutableStateOf(false) }
 
@@ -105,7 +134,7 @@ fun FinanceScreen() {
 
     val currentCal = remember { Calendar.getInstance() }
     var selectedYear by remember { mutableStateOf(currentCal.get(Calendar.YEAR)) }
-    var selectedMonth by remember { mutableStateOf(currentCal.get(Calendar.MONTH)) } // 0-indexed
+    var selectedMonth by remember { mutableStateOf(currentCal.get(Calendar.MONTH)) }
 
     val (monthStartMs, monthEndMs) = remember(selectedYear, selectedMonth) {
         val cal = Calendar.getInstance().apply {
@@ -119,8 +148,7 @@ fun FinanceScreen() {
         }
         val start = cal.timeInMillis
         cal.add(Calendar.MONTH, 1)
-        val end = cal.timeInMillis
-        Pair(start, end)
+        Pair(start, cal.timeInMillis)
     }
 
     val monthName = remember(selectedYear, selectedMonth) {
@@ -139,17 +167,29 @@ fun FinanceScreen() {
         SimpleDateFormat("MMM yyyy", Locale.US).format(cal.time)
     }
 
+    val prevMonthShortName = remember(selectedYear, selectedMonth) {
+        val (py, pm) = previousMonth(selectedYear, selectedMonth)
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, py)
+            set(Calendar.MONTH, pm)
+        }
+        SimpleDateFormat("MMM", Locale.US).format(cal.time)
+    }
+
     val weekDateRangeLabel = remember(stats) {
         if (stats != null && stats!!.weekStartTimestamp > 0L && stats!!.weekEndTimestamp > 0L) {
             val fmt = SimpleDateFormat("dd MMM", Locale.US)
-            "${fmt.format(Date(stats!!.weekStartTimestamp))} - ${fmt.format(Date(stats!!.weekEndTimestamp))}"
-        } else {
-            ""
-        }
+            "${fmt.format(Date(stats!!.weekStartTimestamp))} – ${fmt.format(Date(stats!!.weekEndTimestamp))}"
+        } else ""
     }
 
     LaunchedEffect(debits, categories, selectedYear, selectedMonth) {
-        stats = withContext(Dispatchers.IO) { repo.getStats(selectedYear, selectedMonth) }
+        val (py, pm) = previousMonth(selectedYear, selectedMonth)
+        val (current, prev) = withContext(Dispatchers.IO) {
+            repo.getStats(selectedYear, selectedMonth) to repo.getStats(py, pm)
+        }
+        stats = current
+        prevMonthStats = prev
     }
 
     val monthDebits = remember(debits, monthStartMs, monthEndMs) {
@@ -163,9 +203,7 @@ fun FinanceScreen() {
             monthDebits.groupBy { localDayStart(it.occurredAt) }
                 .map { (day, list) -> DailyTotal(day, list.sumOf { it.amountPaise }) }
                 .sortedBy { it.dayStart }
-        } else {
-            emptyList()
-        }
+        } else emptyList()
     }
 
     val categoryTotals = remember(stats, monthDebits, categoryMap) {
@@ -176,17 +214,14 @@ fun FinanceScreen() {
             }
             .filter { it.third > 0 }
 
-        val source = if (fromStats.isNotEmpty()) {
-            fromStats
-        } else if (monthDebits.isNotEmpty()) {
+        val source = if (fromStats.isNotEmpty()) fromStats
+        else if (monthDebits.isNotEmpty()) {
             monthDebits.groupBy { it.categoryId }
                 .map { (categoryId, list) ->
                     val name = categoryMap[categoryId]?.name ?: "Uncategorized"
                     Triple(categoryId, name, list.sumOf { it.amountPaise })
                 }
-        } else {
-            emptyList()
-        }
+        } else emptyList()
 
         source.sortedByDescending { it.third }.take(6)
     }
@@ -215,279 +250,390 @@ fun FinanceScreen() {
     val attentionIds = attentionDebits.map { it.id }.toSet()
     val recentDebits = monthDebits.filter { it.id !in attentionIds }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp, start = 20.dp, end = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
-        item {
-            MonthHeaderSelector(
-                selectedYear = selectedYear,
-                selectedMonth = selectedMonth,
-                monthName = monthName,
-                onPreviousMonth = {
-                    val cal = Calendar.getInstance().apply {
-                        set(Calendar.YEAR, selectedYear)
-                        set(Calendar.MONTH, selectedMonth)
-                        add(Calendar.MONTH, -1)
+    val monthTotal = stats?.monthTotalPaise ?: 0L
+    val momLabel = monthOverMonthLabel(
+        monthTotal,
+        prevMonthStats?.monthTotalPaise ?: 0L,
+        prevMonthShortName
+    )
+    val uncategorizedShare = if (monthTotal > 0L && uncategorizedId != null) {
+        val uncategorizedTotal = categoryTotals.find { it.first == uncategorizedId }?.third ?: 0L
+        uncategorizedTotal.toDouble() / monthTotal
+    } else 0.0
+
+    val fabGradient = Brush.linearGradient(
+        colors = listOf(Color(0xFF4086FF), Color(0xFF00E5FF))
+    )
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp, start = 20.dp, end = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                MonthHeaderSelector(
+                    monthName = monthName,
+                    selectedYear = selectedYear,
+                    selectedMonth = selectedMonth,
+                    onPreviousMonth = {
+                        val cal = Calendar.getInstance().apply {
+                            set(Calendar.YEAR, selectedYear)
+                            set(Calendar.MONTH, selectedMonth)
+                            add(Calendar.MONTH, -1)
+                        }
+                        selectedYear = cal.get(Calendar.YEAR)
+                        selectedMonth = cal.get(Calendar.MONTH)
+                    },
+                    onNextMonth = {
+                        val cal = Calendar.getInstance().apply {
+                            set(Calendar.YEAR, selectedYear)
+                            set(Calendar.MONTH, selectedMonth)
+                            add(Calendar.MONTH, 1)
+                        }
+                        selectedYear = cal.get(Calendar.YEAR)
+                        selectedMonth = cal.get(Calendar.MONTH)
                     }
-                    selectedYear = cal.get(Calendar.YEAR)
-                    selectedMonth = cal.get(Calendar.MONTH)
-                },
-                onNextMonth = {
-                    val cal = Calendar.getInstance().apply {
-                        set(Calendar.YEAR, selectedYear)
-                        set(Calendar.MONTH, selectedMonth)
-                        add(Calendar.MONTH, 1)
-                    }
-                    selectedYear = cal.get(Calendar.YEAR)
-                    selectedMonth = cal.get(Calendar.MONTH)
+                )
+            }
+
+            item {
+                FinanceCard {
+                    SectionLabel("Spend pulse · $monthShortName")
+                    SpendSparkline(
+                        dailyTotals = sparklineTotals,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
-            )
-        }
-
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(OLEDBlack, RoundedCornerShape(20.dp))
-                    .border(1.dp, Color(0xFF1E2027), RoundedCornerShape(20.dp))
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SectionLabel("Spend pulse · $monthShortName")
-                SpendSparkline(
-                    dailyTotals = sparklineTotals,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
             }
-        }
 
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = monthName.uppercase(),
-                    color = TextSecondary,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
-                    letterSpacing = 1.2.sp
-                )
-                Text(
-                    text = formatRupees(stats?.monthTotalPaise ?: 0L),
-                    color = PureWhite,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 34.sp
-                )
+            item {
+                FinanceCard {
+                    Text(
+                        text = monthName,
+                        color = TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
+                    Text(
+                        text = formatRupees(monthTotal),
+                        color = TextPrimary,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 32.sp
+                    )
+                    if (momLabel != null) {
+                        Text(
+                            text = momLabel,
+                            color = TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        AverageCell("Daily avg", stats?.dailyAveragePaise ?: 0L)
+                        AverageCell(
+                            label = "Weekly avg",
+                            amountPaise = stats?.weeklyAveragePaise ?: 0L,
+                            subLabel = weekDateRangeLabel
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        AverageCell("Monthly avg", stats?.monthlyAveragePaise ?: 0L)
+                        AverageCell("Overall avg", stats?.overallAveragePaise ?: 0L)
+                    }
+                }
             }
-        }
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                AverageCell("Daily avg", stats?.dailyAveragePaise ?: 0L)
-                AverageCell(
-                    label = "Weekly avg",
-                    amountPaise = stats?.weeklyAveragePaise ?: 0L,
-                    subLabel = weekDateRangeLabel
-                )
-            }
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                AverageCell("Monthly avg", stats?.monthlyAveragePaise ?: 0L)
-                AverageCell("Overall avg", stats?.overallAveragePaise ?: 0L)
-            }
-        }
-
-        item {
-            SectionLabel("Category breakdown")
-            val totals = categoryTotals
-
-            if (totals.isEmpty()) {
-                EmptyHint("Debit SMS will auto-log here. Scan inbox for history.")
-            } else {
-                val barColors = resolveCategoryColors(
-                    categoryIds = totals.map { it.first },
-                    categoryMap = categoryMap
-                )
-                val multiLineSeries = remember(categoryDailySeries, barColors) {
-                    categoryDailySeries.mapIndexed { index, series ->
+            item {
+                SectionLabel("Category breakdown")
+                val totals = categoryTotals
+                if (totals.isEmpty()) {
+                    EmptyHint("Debit SMS will auto-log here. Scan inbox for history or add a manual debit.")
+                } else {
+                    val barColors = resolveCategoryColors(
+                        categoryIds = totals.map { it.first },
+                        categoryMap = categoryMap
+                    )
+                    val multiLineSeries = categoryDailySeries.mapIndexed { index, series ->
                         series.copy(color = barColors[index])
                     }
-                }
-                val chartSlices = totals.mapIndexed { index, (_, name, amount) ->
-                    CategoryChartSlice(name, amount, barColors[index])
-                }
+                    val chartSlices = totals.mapIndexed { index, (_, name, amount) ->
+                        CategoryChartSlice(name, amount, barColors[index])
+                    }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
                     CategoryDonutChart(
                         slices = chartSlices,
-                        modifier = Modifier.weight(0.42f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
                     )
-                    Column(
-                        modifier = Modifier.weight(0.58f),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         totals.forEachIndexed { index, (_, name, amount) ->
+                            val pct = if (monthTotal > 0) (amount * 100 / monthTotal).toInt() else 0
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(8.dp)
-                                        .background(
-                                            barColors[index],
-                                            RoundedCornerShape(50)
-                                        )
+                                        .size(10.dp)
+                                        .background(barColors[index], RoundedCornerShape(50))
                                 )
                                 Text(
-                                    text = name.uppercase(),
+                                    text = name,
+                                    color = TextPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "$pct%",
                                     color = TextSecondary,
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 8.sp,
-                                    modifier = Modifier.weight(1f)
+                                    fontSize = 11.sp
                                 )
                                 Text(
                                     text = formatRupees(amount),
                                     color = TextPrimary,
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 9.sp
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                CategoryMultiLineChart(
-                    series = multiLineSeries,
-                    dayStarts = monthDayStarts
-                )
-            }
-        }
 
-        if (attentionDebits.isNotEmpty()) {
-            item { SectionLabel("Needs attention") }
-            items(attentionDebits, key = { it.id }) { debit ->
-                DebitRow(
-                    debit = debit,
-                    categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
-                    onRecategorize = { recategorizeDebit = debit },
-                    onDontTrack = {
-                        scope.launch(Dispatchers.IO) {
-                            repo.dontTrackByDebitId(debit.id)
-                        }
-                        Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
-                    }
-                )
-            }
-        }
-
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { isRecentDebitsExpanded = !isRecentDebitsExpanded }
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SectionLabel("Debits · $monthShortName")
-                    Icon(
-                        imageVector = if (isRecentDebitsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = if (isRecentDebitsExpanded) "Collapse" else "Expand",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(16.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    CategoryMultiLineChart(
+                        series = multiLineSeries,
+                        dayStarts = monthDayStarts
                     )
                 }
-                Text(
-                    text = if (isScanning) "Scanning…" else "Scan inbox",
-                    color = AccentBlue,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 9.sp,
-                    letterSpacing = 0.8.sp,
-                    modifier = Modifier.clickable(enabled = !isScanning) {
-                        isScanning = true
-                        scope.launch(Dispatchers.IO) {
-                            val count = repo.scanInbox()
-                            withContext(Dispatchers.Main) {
-                                isScanning = false
-                                Toast.makeText(
-                                    context,
-                                    "Added ${count} debits",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
-                )
             }
-        }
 
-        if (isRecentDebitsExpanded) {
-            if (recentDebits.isEmpty()) {
-                item { EmptyHint("No debits recorded in $monthShortName. Scan inbox for history.") }
-            } else {
-                items(recentDebits, key = { it.id }) { debit ->
+            if (uncategorizedShare > 0.5 && attentionDebits.isNotEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(AccentBlue.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                            .border(1.dp, AccentBlue.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = "Most spending is uncategorized — tap a debit to assign a category.",
+                            color = TextPrimary.copy(alpha = 0.85f),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
+                }
+            }
+
+            if (attentionDebits.isNotEmpty()) {
+                item { SectionLabel("Needs attention") }
+                items(attentionDebits, key = { it.id }) { debit ->
                     DebitRow(
                         debit = debit,
                         categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
-                        showAutoBadge = debit.autoCategorized,
-                        onRecategorize = { recategorizeDebit = debit },
+                        categoryColor = categoryMap[debit.categoryId]?.let { Color(it.colorArgb) },
+                        onTap = {
+                            if (debit.isManualEntry()) editManualDebit = debit
+                            else recategorizeDebit = debit
+                        },
                         onDontTrack = {
-                            scope.launch(Dispatchers.IO) {
-                                repo.dontTrackByDebitId(debit.id)
-                            }
+                            scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debit.id) }
                             Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
             }
-        }
 
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showManage = true }
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SectionLabel("Manage categories")
-                Text(
-                    text = "+",
-                    color = AccentGreen,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isRecentDebitsExpanded = !isRecentDebitsExpanded }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SectionLabel("Debits · $monthShortName (${monthDebits.size})")
+                        Icon(
+                            imageVector = if (isRecentDebitsExpanded) Icons.Default.KeyboardArrowUp
+                            else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isRecentDebitsExpanded) "Collapse" else "Expand",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Add debit",
+                            color = AccentGreen,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable { showAddDebit = true }
+                        )
+                        Text(
+                            text = if (isScanning) "Scanning…" else "Scan inbox",
+                            color = AccentBlue,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable(enabled = !isScanning) {
+                                isScanning = true
+                                scope.launch(Dispatchers.IO) {
+                                    val count = repo.scanInbox()
+                                    withContext(Dispatchers.Main) {
+                                        isScanning = false
+                                        Toast.makeText(context, "Added $count debits", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (isRecentDebitsExpanded) {
+                if (recentDebits.isEmpty()) {
+                    item { EmptyHint("No other debits in $monthShortName.") }
+                } else {
+                    items(recentDebits, key = { it.id }) { debit ->
+                        DebitRow(
+                            debit = debit,
+                            categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
+                            categoryColor = categoryMap[debit.categoryId]?.let { Color(it.colorArgb) },
+                            showAutoBadge = debit.autoCategorized,
+                            onTap = {
+                                if (debit.isManualEntry()) editManualDebit = debit
+                                else recategorizeDebit = debit
+                            },
+                            onDontTrack = {
+                                scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debit.id) }
+                                Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showManage = true }
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SectionLabel("Manage categories")
+                    Text(
+                        text = "+",
+                        color = AccentGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 28.dp, end = 24.dp)
+                .size(60.dp)
+                .background(fabGradient, RoundedCornerShape(30.dp))
+                .clickable { showAddDebit = true },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Add debit",
+                tint = Color(0xFF07080B),
+                modifier = Modifier.size(28.dp)
+            )
+        }
+    }
+
+    if (showAddDebit) {
+        AddDebitSheet(
+            categories = categories,
+            onDismiss = { showAddDebit = false },
+            onSave = { form ->
+                scope.launch(Dispatchers.IO) {
+                    repo.addManualDebit(
+                        amountPaise = form.amountPaise,
+                        note = form.note,
+                        payee = form.payee,
+                        categoryId = form.categoryId,
+                        occurredAt = form.occurredAt
+                    )
+                }
+                showAddDebit = false
+                Toast.makeText(context, "Debit added", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    if (editManualDebit != null) {
+        val debit = editManualDebit!!
+        AddDebitSheet(
+            categories = categories,
+            existingDebit = debit,
+            onDismiss = { editManualDebit = null },
+            onSave = { form ->
+                scope.launch(Dispatchers.IO) {
+                    val categoryId = form.categoryId
+                        ?: categories.find { it.name == "Uncategorized" }?.id
+                        ?: return@launch
+                    repo.updateManualDebit(
+                        debitId = debit.id,
+                        amountPaise = form.amountPaise,
+                        note = form.note,
+                        payee = form.payee,
+                        categoryId = categoryId,
+                        occurredAt = form.occurredAt
+                    )
+                }
+                editManualDebit = null
+                Toast.makeText(context, "Debit updated", Toast.LENGTH_SHORT).show()
+            },
+            onDelete = {
+                scope.launch(Dispatchers.IO) { repo.deleteManualDebit(debit.id) }
+                editManualDebit = null
+                Toast.makeText(context, "Debit deleted", Toast.LENGTH_SHORT).show()
+            }
+        )
     }
 
     if (recategorizeDebit != null) {
         AlertDialog(
             onDismissRequest = { recategorizeDebit = null },
-            containerColor = Color(0xFF161821),
+            containerColor = DarkSurface,
             title = {
                 Text(
                     text = formatRupees(recategorizeDebit!!.amountPaise),
-                    color = PureWhite,
-                    fontFamily = FontFamily.Monospace
+                    color = TextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 18.sp
                 )
             },
             text = {
@@ -502,18 +648,14 @@ fun FinanceScreen() {
                                 repo.categorizeDebit(debit.id, category.id)
                             }
                             recategorizeDebit = null
-                            Toast.makeText(
-                                context,
-                                "Logged · ${category.name}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            Toast.makeText(context, "Logged · ${category.name}", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { recategorizeDebit = null }) {
-                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -522,13 +664,13 @@ fun FinanceScreen() {
     if (showManage) {
         AlertDialog(
             onDismissRequest = { showManage = false },
-            containerColor = Color(0xFF161821),
+            containerColor = DarkSurface,
             title = {
                 Text(
                     "Manage categories",
-                    color = PureWhite,
+                    color = TextPrimary,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 14.sp
+                    fontSize = 15.sp
                 )
             },
             text = {
@@ -543,14 +685,14 @@ fun FinanceScreen() {
                                 text = category.name,
                                 color = Color(category.colorArgb),
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp
+                                fontSize = 13.sp
                             )
                             if (!category.isSystem) {
                                 Text(
-                                    text = "DELETE",
+                                    text = "Delete",
                                     color = AccentRed,
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
+                                    fontSize = 12.sp,
                                     modifier = Modifier.clickable {
                                         scope.launch(Dispatchers.IO) {
                                             repo.deleteCategory(category.id)
@@ -564,14 +706,14 @@ fun FinanceScreen() {
                         text = "Add category",
                         color = AccentGreen,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
+                        fontSize = 13.sp,
                         modifier = Modifier.clickable { showAddCategory = true }
                     )
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showManage = false }) {
-                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -580,13 +722,9 @@ fun FinanceScreen() {
     if (showAddCategory) {
         AlertDialog(
             onDismissRequest = { showAddCategory = false },
-            containerColor = Color(0xFF161821),
+            containerColor = DarkSurface,
             title = {
-                Text(
-                    "Add category",
-                    color = PureWhite,
-                    fontFamily = FontFamily.Monospace
-                )
+                Text("Add category", color = TextPrimary, fontFamily = FontFamily.Monospace)
             },
             text = {
                 OutlinedTextField(
@@ -594,8 +732,8 @@ fun FinanceScreen() {
                     onValueChange = { newCategoryName = it },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = PureWhite,
-                        unfocusedTextColor = PureWhite,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
                         cursorColor = AccentBlue,
                         focusedBorderColor = AccentBlue,
                         unfocusedBorderColor = TextSecondary
@@ -611,31 +749,25 @@ fun FinanceScreen() {
                             showAddCategory = false
                             scope.launch(Dispatchers.IO) {
                                 val paletteColors = listOf(
-                                    0xFFFF9F0A.toInt(), // Orange
-                                    0xFF4086FF.toInt(), // Electric Blue
-                                    0xFF32D74B.toInt(), // Neon Green
-                                    0xFFFF453A.toInt(), // Red
-                                    0xFF00E5FF.toInt(), // Neon Cyan
-                                    0xFFBF5AF2.toInt(), // Purple
-                                    0xFFFFD60A.toInt(), // Yellow
-                                    0xFFFF375F.toInt(), // Pink
-                                    0xFF64D2FF.toInt(), // Light Blue
-                                    0xFFE040FB.toInt()  // Magenta
+                                    0xFFFF9F0A.toInt(), 0xFF4086FF.toInt(), 0xFF32D74B.toInt(),
+                                    0xFFFF453A.toInt(), 0xFF00E5FF.toInt(), 0xFFBF5AF2.toInt(),
+                                    0xFFFFD60A.toInt(), 0xFFFF375F.toInt(), 0xFF64D2FF.toInt(),
+                                    0xFFE040FB.toInt()
                                 )
                                 val existingColors = categories.map { it.colorArgb }.toSet()
                                 val color = paletteColors.firstOrNull { it !in existingColors }
-                                    ?: paletteColors[(categories.size) % paletteColors.size]
+                                    ?: paletteColors[categories.size % paletteColors.size]
                                 repo.addCategory(name, color)
                             }
                         }
                     }
                 ) {
-                    Text("+ ADD", color = AccentGreen, fontFamily = FontFamily.Monospace)
+                    Text("Add", color = AccentGreen, fontFamily = FontFamily.Monospace)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showAddCategory = false }) {
-                    Text("CANCEL", color = TextSecondary, fontFamily = FontFamily.Monospace)
+                    Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         )
@@ -643,22 +775,36 @@ fun FinanceScreen() {
 }
 
 @Composable
+private fun FinanceCard(content: @Composable () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkSurface, RoundedCornerShape(20.dp))
+            .border(1.dp, BorderColor, RoundedCornerShape(20.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        content = { content() }
+    )
+}
+
+@Composable
 private fun MonthHeaderSelector(
+    monthName: String,
     selectedYear: Int,
     selectedMonth: Int,
-    monthName: String,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit
 ) {
     val currentCal = remember { Calendar.getInstance() }
-    val isCurrentMonth = selectedYear == currentCal.get(Calendar.YEAR) && selectedMonth == currentCal.get(Calendar.MONTH)
+    val isCurrentMonth = selectedYear == currentCal.get(Calendar.YEAR) &&
+        selectedMonth == currentCal.get(Calendar.MONTH)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(OLEDBlack, RoundedCornerShape(16.dp))
-            .border(1.dp, Color(0xFF1E2027), RoundedCornerShape(16.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .background(DarkSurface, RoundedCornerShape(16.dp))
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -668,31 +814,17 @@ private fun MonthHeaderSelector(
                 .padding(vertical = 4.dp, horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "‹",
-                color = AccentBlue,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Text("‹", color = AccentBlue, fontFamily = FontFamily.Monospace, fontSize = 22.sp)
             Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = "PREV",
-                color = AccentBlue,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
+            Text("Prev", color = AccentBlue, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         }
 
         Text(
-            text = monthName.uppercase(),
-            color = PureWhite,
+            text = monthName,
+            color = TextPrimary,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp,
-            letterSpacing = 1.sp
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 15.sp
         )
 
         Row(
@@ -702,20 +834,17 @@ private fun MonthHeaderSelector(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "NEXT",
-                color = if (isCurrentMonth) TextSecondary.copy(alpha = 0.3f) else AccentBlue,
+                text = "Next",
+                color = if (isCurrentMonth) TextSecondary.copy(alpha = 0.35f) else AccentBlue,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
+                fontSize = 12.sp
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = "›",
-                color = if (isCurrentMonth) TextSecondary.copy(alpha = 0.3f) else AccentBlue,
+                color = if (isCurrentMonth) TextSecondary.copy(alpha = 0.35f) else AccentBlue,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 22.sp
             )
         }
     }
@@ -723,28 +852,27 @@ private fun MonthHeaderSelector(
 
 @Composable
 private fun AverageCell(label: String, amountPaise: Long, subLabel: String = "") {
-    Column(modifier = Modifier.width(160.dp)) {
+    Column(modifier = Modifier.width(155.dp)) {
         Text(
-            text = label.uppercase(),
+            text = label,
             color = TextSecondary,
             fontFamily = FontFamily.Monospace,
-            fontSize = 8.sp,
-            letterSpacing = 1.sp
+            fontSize = 11.sp
         )
         if (subLabel.isNotBlank()) {
             Text(
                 text = subLabel,
                 color = TextSecondary.copy(alpha = 0.75f),
                 fontFamily = FontFamily.Monospace,
-                fontSize = 8.sp
+                fontSize = 10.sp
             )
         }
         Text(
             text = formatRupees(amountPaise),
-            color = PureWhite,
+            color = TextPrimary,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 15.sp
         )
     }
 }
@@ -752,12 +880,11 @@ private fun AverageCell(label: String, amountPaise: Long, subLabel: String = "")
 @Composable
 private fun SectionLabel(text: String) {
     Text(
-        text = text.uppercase(),
+        text = text,
         color = TextSecondary,
         fontFamily = FontFamily.Monospace,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.4.sp
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium
     )
 }
 
@@ -765,28 +892,29 @@ private fun SectionLabel(text: String) {
 private fun EmptyHint(text: String) {
     Text(
         text = text,
-        color = TextSecondary.copy(alpha = 0.7f),
+        color = TextSecondary.copy(alpha = 0.8f),
         fontFamily = FontFamily.Monospace,
-        fontSize = 10.sp,
-        lineHeight = 14.sp
+        fontSize = 12.sp,
+        lineHeight = 17.sp
     )
 }
 
 @Composable
 private fun CategoryChip(category: CategoryEntity, onClick: () -> Unit) {
+    val catColor = Color(category.colorArgb)
     Box(
         modifier = Modifier
-            .background(Color(category.colorArgb).copy(alpha = 0.15f), RoundedCornerShape(14.dp))
-            .border(1.dp, Color(category.colorArgb).copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+            .background(catColor.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .border(1.dp, catColor.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
             .clickable { onClick() }
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Text(
-            text = category.name.uppercase(),
-            color = Color(category.colorArgb),
+            text = category.name,
+            color = catColor,
             fontFamily = FontFamily.Monospace,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
         )
     }
 }
@@ -795,17 +923,20 @@ private fun CategoryChip(category: CategoryEntity, onClick: () -> Unit) {
 private fun DebitRow(
     debit: DebitEntity,
     categoryName: String,
+    categoryColor: Color? = null,
     showAutoBadge: Boolean = false,
-    onRecategorize: () -> Unit,
+    onTap: () -> Unit,
     onDontTrack: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("dd MMM · HH:mm", Locale.US) }
+    val pillColor = categoryColor ?: TextSecondary
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(OLEDBlack, RoundedCornerShape(16.dp))
-            .border(1.dp, Color(0xFF1E2027), RoundedCornerShape(16.dp))
-            .clickable { onRecategorize() }
+            .background(DarkSurfaceElevated, RoundedCornerShape(16.dp))
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
+            .clickable { onTap() }
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -816,33 +947,41 @@ private fun DebitRow(
         ) {
             Text(
                 text = formatRupees(debit.amountPaise),
-                color = PureWhite,
+                color = TextPrimary,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
+                fontSize = 17.sp
             )
-            Text(
-                text = categoryName.uppercase(),
-                color = AccentGreen,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 9.sp,
-                letterSpacing = 0.8.sp
-            )
+            Box(
+                modifier = Modifier
+                    .background(pillColor.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                    .border(1.dp, pillColor.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = categoryName,
+                    color = pillColor,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp
+                )
+            }
         }
         Text(
-            text = debit.sender.uppercase(),
+            text = debit.sender,
             color = TextSecondary,
             fontFamily = FontFamily.Monospace,
-            fontSize = 9.sp
+            fontSize = 12.sp
         )
-        Text(
-            text = debit.snippet,
-            color = TextPrimary.copy(alpha = 0.75f),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 10.sp,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        if (debit.snippet.isNotBlank() && debit.snippet != "Manual entry") {
+            Text(
+                text = debit.snippet,
+                color = TextPrimary.copy(alpha = 0.7f),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -851,26 +990,49 @@ private fun DebitRow(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = dateFormat.format(Date(debit.occurredAt)),
-                    color = TextSecondary.copy(alpha = 0.7f),
+                    color = TextSecondary,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 8.sp
+                    fontSize = 11.sp
                 )
-                if (showAutoBadge) {
+                if (debit.isManualEntry()) {
+                    Box(
+                        modifier = Modifier
+                            .background(AccentBlue.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "Manual",
+                            color = AccentBlue,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp
+                        )
+                    }
+                } else if (showAutoBadge) {
                     Text(
                         text = "auto",
-                        color = AccentBlue,
+                        color = AccentBlue.copy(alpha = 0.8f),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 8.sp
+                        fontSize = 10.sp
                     )
                 }
             }
-            Text(
-                text = "Don't Track",
-                color = AccentRed.copy(alpha = 0.85f),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 8.sp,
-                modifier = Modifier.clickable { onDontTrack() }
-            )
+            if (!debit.isManualEntry()) {
+                Text(
+                    text = "Don't track",
+                    color = AccentRed.copy(alpha = 0.7f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    modifier = Modifier.clickable { onDontTrack() }
+                )
+            } else {
+                Text(
+                    text = "Edit",
+                    color = AccentBlue.copy(alpha = 0.8f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    modifier = Modifier.clickable { onTap() }
+                )
+            }
         }
     }
 }

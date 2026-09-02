@@ -150,13 +150,13 @@ fun SpendSparkline(
             drawPath(
                 flatArea,
                 brush = Brush.verticalGradient(
-                    colors = listOf(lineColor.copy(alpha = 0.35f), lineColor.copy(alpha = 0.02f)),
+                    colors = listOf(lineColor.copy(alpha = 0.28f), lineColor.copy(alpha = 0.02f)),
                     startY = y,
                     endY = padTop + chartH
                 )
             )
             drawLine(
-                color = lineColor.copy(alpha = 0.25f),
+                color = lineColor.copy(alpha = 0.18f),
                 start = Offset(left, y),
                 end = Offset(right, y),
                 strokeWidth = 10f,
@@ -169,7 +169,7 @@ fun SpendSparkline(
                 strokeWidth = 2.5f,
                 cap = StrokeCap.Round
             )
-            drawCircle(lineColor.copy(alpha = 0.35f), radius = 8f, center = points.first())
+            drawCircle(lineColor.copy(alpha = 0.28f), radius = 8f, center = points.first())
             drawCircle(lineColor, radius = 5f, center = points.first())
             return@Canvas
         }
@@ -202,7 +202,7 @@ fun SpendSparkline(
         drawContext.canvas.clipRect(0f, 0f, clipW, size.height)
         drawPath(
             path = linePath,
-            color = lineColor.copy(alpha = 0.2f),
+            color = lineColor.copy(alpha = 0.15f),
             style = Stroke(width = 10f, cap = StrokeCap.Round)
         )
         drawPath(
@@ -211,7 +211,7 @@ fun SpendSparkline(
             style = Stroke(width = 2.5f, cap = StrokeCap.Round)
         )
         points.forEach { p ->
-            drawCircle(lineColor.copy(alpha = 0.35f), radius = 5f, center = p)
+            drawCircle(lineColor.copy(alpha = 0.28f), radius = 5f, center = p)
             drawCircle(lineColor, radius = 3f, center = p)
         }
         drawContext.canvas.restore()
@@ -268,7 +268,7 @@ fun CategoryMultiLineChart(
         val gridColor = TextSecondary.copy(alpha = 0.12f)
         val labelPaint = Paint().apply {
             color = TextSecondary.copy(alpha = 0.85f).toArgb()
-            textSize = 22f
+            textSize = 28f
             typeface = Typeface.MONOSPACE
             isAntiAlias = true
         }
@@ -336,7 +336,7 @@ fun CategoryMultiLineChart(
             }
             if (points.size <= 1) {
                 points.forEach { p ->
-                    drawCircle(categorySeries.color.copy(alpha = 0.35f), radius = 5f, center = p)
+                    drawCircle(categorySeries.color.copy(alpha = 0.28f), radius = 5f, center = p)
                     drawCircle(categorySeries.color, radius = 3f, center = p)
                 }
                 return@forEach
@@ -349,7 +349,7 @@ fun CategoryMultiLineChart(
             }
             drawPath(
                 path = linePath,
-                color = categorySeries.color.copy(alpha = 0.18f),
+                color = categorySeries.color.copy(alpha = 0.14f),
                 style = Stroke(width = 7f, cap = StrokeCap.Round)
             )
             drawPath(
@@ -358,7 +358,7 @@ fun CategoryMultiLineChart(
                 style = Stroke(width = 2f, cap = StrokeCap.Round)
             )
             points.forEach { p ->
-                drawCircle(categorySeries.color.copy(alpha = 0.35f), radius = 4f, center = p)
+                drawCircle(categorySeries.color.copy(alpha = 0.28f), radius = 4f, center = p)
                 drawCircle(categorySeries.color, radius = 2.5f, center = p)
             }
         }
