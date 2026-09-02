@@ -97,7 +97,9 @@ import kotlin.math.roundToInt
 import com.example.ui.theme.*
 import com.example.finance.FinanceScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalDensity
 
@@ -205,6 +207,60 @@ fun restoreIncomingConversation(context: Context, threadId: Long) {
     ArchiveManager(context).unarchiveThread(context, threadId)
 }
 
+const val SOFT_DELETE_RETENTION_MS = 6 * 60 * 60 * 1000L
+
+/**
+ * True when [message] is the row a tombstone was created for. An id alone is not
+ * enough: the provider recycles ids, so an unrelated message can inherit one.
+ */
+fun Map<Long, MessageTombstone>.hides(message: SmsMessage): Boolean =
+    this[message.id]?.matches(message.timestamp, message.address) == true
+
+/** Live `date`/`address` of an SMS row, or null when the row no longer exists. */
+fun readSmsRowFingerprint(context: Context, messageId: Long): Pair<Long, String>? {
+    if (messageId <= 0L) return null
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://sms/$messageId"),
+            arrayOf("date", "address"),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            val dateIndex = cursor.getColumnIndex("date")
+            val addressIndex = cursor.getColumnIndex("address")
+            val date = if (dateIndex != -1) normalizeProviderDate(cursor.getLong(dateIndex)) else 0L
+            val address = if (addressIndex != -1) cursor.getString(addressIndex).orEmpty() else ""
+            return date to address
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return null
+}
+
+/** Timestamp of the newest message in a thread, or 0 when the thread is empty. */
+private fun latestMessageDateInThread(context: Context, threadId: Long): Long {
+    if (threadId <= 0L) return 0L
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://sms"),
+            arrayOf("date"),
+            "thread_id = ?",
+            arrayOf(threadId.toString()),
+            "date DESC"
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                return normalizeProviderDate(cursor.getLong(0))
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return 0L
+}
+
 // Ultra-light SharedPreferences Delete Manager for Soft Deletion (6 hours)
 class DeleteManager(context: Context) {
     private val prefs = context.getSharedPreferences("sms_delete_prefs", Context.MODE_PRIVATE)
@@ -226,16 +282,34 @@ class DeleteManager(context: Context) {
         prefs.edit().remove(threadId.toString()).apply()
     }
 
-    fun getDeletedMessages(): Map<Long, Long> {
+    /** Tombstones that can still be identity-checked, keyed by the row id they were created for. */
+    fun getDeletedMessages(): Map<Long, MessageTombstone> {
         return msgPrefs.all.mapNotNull { (key, value) ->
-            val messageId = key.toLongOrNull()
-            val timestamp = value as? Long
-            if (messageId != null && timestamp != null) messageId to timestamp else null
+            val messageId = key.toLongOrNull() ?: return@mapNotNull null
+            MessageTombstone.deserialize(messageId, value)?.let { messageId to it }
         }.toMap()
     }
 
-    fun softDeleteMessage(messageId: Long) {
-        msgPrefs.edit().putLong(messageId.toString(), System.currentTimeMillis()).apply()
+    fun softDeleteMessage(messageId: Long, messageDate: Long, address: String?) {
+        if (messageId <= 0L || messageDate <= 0L) return
+        val tombstone = MessageTombstone(
+            messageId = messageId,
+            messageDate = messageDate,
+            address = address?.trim().orEmpty(),
+            deletedAt = System.currentTimeMillis()
+        )
+        msgPrefs.edit().putString(messageId.toString(), tombstone.serialize()).apply()
+    }
+
+    /**
+     * Hides the row only if it is still present, so the id cannot be recycled
+     * into a tombstone that belongs to a message the user never deleted.
+     */
+    fun softDeleteMessage(context: Context, messageId: Long): Boolean {
+        val (date, address) = readSmsRowFingerprint(context, messageId) ?: return false
+        if (date <= 0L) return false
+        softDeleteMessage(messageId, date, address)
+        return true
     }
 
     fun restoreMessage(messageId: Long) {
@@ -251,45 +325,53 @@ class DeleteManager(context: Context) {
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
         msgPrefs.unregisterOnSharedPreferenceChangeListener(listener)
     }
-    
+
     fun cleanUpExpired(context: Context) {
         val now = System.currentTimeMillis()
-        val expired = getDeletedThreads().filter { (now - it.value) > 6 * 60 * 60 * 1000L }
+        val expired = getDeletedThreads().filter { (now - it.value) > SOFT_DELETE_RETENTION_MS }
         if (expired.isNotEmpty()) {
             val editor = prefs.edit()
-            for ((id, _) in expired) {
-                // Permanently delete from Android provider
-                try {
-                    context.contentResolver.delete(
-                        Uri.parse("content://sms/conversations/$id"),
-                        null,
-                        null
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            for ((id, deletedAt) in expired) {
+                // Messages that landed after the user deleted the thread were never
+                // deleted by anyone; purging the conversation would destroy them, so
+                // the thread is released back to the inbox instead.
+                if (latestMessageDateInThread(context, id) <= deletedAt) {
+                    try {
+                        context.contentResolver.delete(
+                            Uri.parse("content://sms/conversations/$id"),
+                            null,
+                            null
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
                 editor.remove(id.toString())
             }
             editor.apply()
         }
 
-        val expiredMsgs = getDeletedMessages().filter { (now - it.value) > 6 * 60 * 60 * 1000L }
-        if (expiredMsgs.isNotEmpty()) {
-            val editor = msgPrefs.edit()
-            for ((id, _) in expiredMsgs) {
-                try {
-                    context.contentResolver.delete(
-                        Uri.parse("content://sms/$id"),
-                        null,
-                        null
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-                editor.remove(id.toString())
+        val msgEditor = msgPrefs.edit()
+        var dirty = false
+        for ((key, value) in msgPrefs.all) {
+            val messageId = key.toLongOrNull()
+            val tombstone = messageId?.let { MessageTombstone.deserialize(it, value) }
+            if (tombstone == null) {
+                // Entries without an identity (v1 format) can only mis-target a
+                // recycled id, so they are discarded without touching the provider.
+                msgEditor.remove(key)
+                dirty = true
+                continue
             }
-            editor.apply()
+            if ((now - tombstone.deletedAt) <= SOFT_DELETE_RETENTION_MS) continue
+            val fingerprint = readSmsRowFingerprint(context, tombstone.messageId)
+            if (fingerprint != null && tombstone.matches(fingerprint.first, fingerprint.second)) {
+                deleteSmsById(context, tombstone.messageId)
+            }
+            msgEditor.remove(key)
+            dirty = true
         }
+        if (dirty) msgEditor.apply()
     }
 }
 
@@ -407,32 +489,6 @@ fun deleteSmsById(context: Context, messageId: Long): Boolean {
     return false
 }
 
-fun deleteLatestInboxFromSender(context: Context, sender: String): Boolean {
-    if (sender.isBlank()) return false
-    try {
-        context.contentResolver.query(
-            Telephony.Sms.Inbox.CONTENT_URI,
-            arrayOf("_id", "address"),
-            null,
-            null,
-            "date DESC"
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndex("_id")
-            val addressIndex = cursor.getColumnIndex("address")
-            while (cursor.moveToNext()) {
-                val address = if (addressIndex != -1) cursor.getString(addressIndex).orEmpty() else ""
-                val matches = address == sender || PhoneNumberUtils.compare(address, sender)
-                if (!matches) continue
-                val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
-                if (deleteSmsById(context, id)) return true
-            }
-        }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-    return false
-}
-
 private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
     var deletedAny = false
     for (id in ids) {
@@ -452,13 +508,13 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
     var archivedIds by remember { mutableStateOf(archiveManager.getArchivedThreadIds()) }
     var unarchivedIds by remember { mutableStateOf(archiveManager.getUnarchivedThreadIds()) }
     var deletedIds by remember { mutableStateOf(deleteManager.getDeletedThreads().keys) }
-    var deletedMessageIds by remember { mutableStateOf(deleteManager.getDeletedMessages().keys) }
+    var deletedMessages by remember { mutableStateOf(deleteManager.getDeletedMessages()) }
     var starredIds by remember { mutableStateOf(starManager.getStarredMessageIds()) }
 
     DisposableEffect(deleteManager) {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             deletedIds = deleteManager.getDeletedThreads().keys
-            deletedMessageIds = deleteManager.getDeletedMessages().keys
+            deletedMessages = deleteManager.getDeletedMessages()
         }
         deleteManager.registerChangeListener(listener)
         onDispose {
@@ -555,12 +611,19 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
         isDefaultSms = checkDefaultSms(context)
     }
 
-    // Register Background ContentObserver for Database Changes
+    // Register Background ContentObserver for Database Changes.
+    // Debounce: mark-as-read and provider writes would otherwise cancel in-flight
+    // thread loads via refreshCounter and leave the conversation empty.
+    val appScope = rememberCoroutineScope()
+    var observerRefreshJob by remember { mutableStateOf<Job?>(null) }
     DisposableEffect(Unit) {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
-                // Re-trigger load atomically
-                refreshCounter++
+                observerRefreshJob?.cancel()
+                observerRefreshJob = appScope.launch {
+                    delay(300)
+                    refreshCounter++
+                }
             }
         }
         try {
@@ -574,6 +637,7 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
         }
 
         onDispose {
+            observerRefreshJob?.cancel()
             try {
                 context.contentResolver.unregisterContentObserver(observer)
             } catch (e: Exception) {
@@ -590,7 +654,7 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                 isDefaultSms = checkDefaultSms(context)
                 permissionsGranted = checkSmsPermissions(context)
                 deletedIds = deleteManager.getDeletedThreads().keys
-                deletedMessageIds = deleteManager.getDeletedMessages().keys
+                deletedMessages = deleteManager.getDeletedMessages()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -618,15 +682,6 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
         if (targetSender.isNullOrEmpty() && targetThreadId <= 0L) return@LaunchedEffect
 
         var resolvedThreadId = targetThreadId
-        if (resolvedThreadId <= 0L && !targetSender.isNullOrEmpty()) {
-            resolvedThreadId = withContext(Dispatchers.IO) {
-                try {
-                    Telephony.Threads.getOrCreateThreadId(context, targetSender)
-                } catch (e: Exception) {
-                    0L
-                }
-            }
-        }
 
         if (resolvedThreadId > 0L) {
             restoreIncomingConversation(context, resolvedThreadId)
@@ -682,30 +737,37 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
     }
 
     // 2. Active Thread Conversation List Querying Hook
-    LaunchedEffect(activeThread, refreshCounter, deletedMessageIds) {
+    LaunchedEffect(activeThread, refreshCounter, deletedMessages) {
         val currentThread = activeThread
         if (currentThread != null && permissionsGranted) {
+            val msgs = withContext(Dispatchers.IO) {
+                queryMessagesForThread(
+                    context,
+                    currentThread.threadId,
+                    currentThread.address,
+                    deletedMessages,
+                    currentThread.snippet
+                )
+            }
+            if (activeThread?.threadId == currentThread.threadId) {
+                activeMessages = msgs
+            }
             withContext(Dispatchers.IO) {
-                val msgs = queryMessagesForThread(context, currentThread.threadId, currentThread.address, deletedMessageIds)
-                markThreadAsRead(context, currentThread.threadId)
-                withContext(Dispatchers.Main) {
-                    activeMessages = msgs
-                }
+                markThreadAsRead(context, currentThread.threadId, currentThread.address)
             }
         }
     }
 
     // 3. Starred Messages Querying Hook
-    LaunchedEffect(permissionsGranted, starredIds, refreshCounter, deletedMessageIds, deletedIds) {
+    LaunchedEffect(permissionsGranted, starredIds, refreshCounter, deletedMessages, deletedIds) {
         if (permissionsGranted) {
             withContext(Dispatchers.IO) {
-                val validStarredIds = starredIds.filter { !deletedMessageIds.contains(it) }.toSet()
-                val msgs = queryMessagesByIds(context, validStarredIds)
+                val msgs = queryMessagesByIds(context, starredIds)
                 if (msgs != null) {
-                    // If some validStarredIds are not found in the DB (meaning they were permanently deleted),
+                    // If some starred ids are not found in the DB (meaning they were permanently deleted),
                     // we clean them up from starManager's Shared Preferences.
                     val queriedMsgIds = msgs.map { it.id }.toSet()
-                    val missingStarredIds = validStarredIds.filter { !queriedMsgIds.contains(it) }
+                    val missingStarredIds = starredIds.filter { !queriedMsgIds.contains(it) }
                     if (missingStarredIds.isNotEmpty()) {
                         val starPrefs = context.getSharedPreferences("sms_star_prefs", Context.MODE_PRIVATE)
                         val starEditor = starPrefs.edit()
@@ -713,7 +775,9 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                         starEditor.apply()
                     }
 
-                    val filteredMsgs = msgs.filter { !deletedIds.contains(it.threadId) }
+                    val filteredMsgs = msgs.filter {
+                        !deletedIds.contains(it.threadId) && !deletedMessages.hides(it)
+                    }
                     val namedMsgs = filteredMsgs.map { msg ->
                         val name = getContactName(context, msg.address) ?: msg.address
                         msg to name
@@ -929,7 +993,7 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                 // RECENTLY DELETED SCREEN
                 DeletedThreadsScreen(
                     deletedIds = deletedIds,
-                    deletedMsgIds = deletedMessageIds,
+                    deletedMsgTombstones = deletedMessages,
                     deleteManager = deleteManager,
                     onBack = {
                         isDeletedFolderOpen = false
@@ -937,7 +1001,7 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                     },
                     onRefresh = {
                         deletedIds = deleteManager.getDeletedThreads().keys
-                        deletedMessageIds = deleteManager.getDeletedMessages().keys
+                        deletedMessages = deleteManager.getDeletedMessages()
                         refreshCounter++
                     }
                 )
@@ -3144,6 +3208,48 @@ private fun formatMinimalTimestamp(milliSeconds: Long): String {
     }
 }
 
+fun normalizeProviderDate(date: Long): Long {
+    // Conversations simple=true stores seconds; SMS stores milliseconds.
+    return if (date in 1 until 100_000_000_000L) date * 1000L else date
+}
+
+private fun syntheticThreadId(address: String): Long {
+    val key = SmsAddress.entityKey(address)
+    if (key.isEmpty()) return 0L
+    val hash = key.hashCode().toLong() and 0x7fffffffL
+    return -hash.coerceAtLeast(1L)
+}
+
+private fun phoneAddressesMatch(a: String, b: String): Boolean {
+    return PhoneNumberUtils.compare(a, b)
+}
+
+private fun loadMmsBody(context: Context, mmsId: Long): String {
+    if (mmsId <= 0L) return ""
+    val parts = mutableListOf<String>()
+    try {
+        context.contentResolver.query(
+            Uri.parse("content://mms/$mmsId/part"),
+            arrayOf("ct", "text"),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val ctIndex = cursor.getColumnIndex("ct")
+            val textIndex = cursor.getColumnIndex("text")
+            while (cursor.moveToNext()) {
+                val ct = if (ctIndex != -1) cursor.getString(ctIndex).orEmpty() else ""
+                if (!ct.startsWith("text/plain")) continue
+                val text = if (textIndex != -1) cursor.getString(textIndex) else null
+                if (!text.isNullOrBlank()) parts.add(text)
+            }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return parts.joinToString("\n")
+}
+
 // Core database queries performing asynchronous operations
 private fun queryAllThreads(
     context: Context,
@@ -3180,11 +3286,20 @@ private fun queryThreadsFromConversations(
             val recipientIndex = cursor.getColumnIndex("recipient_ids")
             val archIndex = cursor.getColumnIndex("archived")
 
+            val threadIdIndex = cursor.getColumnIndex("thread_id")
+            val addressColIndex = cursor.getColumnIndex("address")
             var rowCount = 0
             var unresolved = 0
             while (cursor.moveToNext()) {
                 rowCount++
-                val threadId = cursor.getLong(idIndex)
+                // simple=true: _id is thread_id. Some OEMs ignore simple=true and
+                // return the latest message _id instead — prefer thread_id when present.
+                val threadId = if (threadIdIndex != -1) {
+                    val fromColumn = cursor.getLong(threadIdIndex)
+                    if (fromColumn > 0L) fromColumn else cursor.getLong(idIndex)
+                } else {
+                    cursor.getLong(idIndex)
+                }
                 if (threadId <= 0L) continue
                 if (onlyDeleted) {
                     if (!deletedIds.contains(threadId)) continue
@@ -3192,12 +3307,13 @@ private fun queryThreadsFromConversations(
                     continue
                 }
 
-                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
+                val date = normalizeProviderDate(if (dateIndex != -1) cursor.getLong(dateIndex) else 0L)
                 val snippet = if (snippetIndex != -1) cursor.getString(snippetIndex).orEmpty() else ""
                 val recipientIds = if (recipientIndex != -1) cursor.getString(recipientIndex).orEmpty() else ""
                 val systemArchived = archIndex != -1 && cursor.getInt(archIndex) == 1
 
                 val address = resolveAddressFromRecipientIds(recipientIds, canonicalMap)
+                    ?: if (addressColIndex != -1) cursor.getString(addressColIndex)?.takeIf { it.isNotBlank() } else null
                     ?: lookupLatestAddressForThread(context, threadId)
                 if (address.isNullOrBlank()) {
                     unresolved++
@@ -3230,7 +3346,7 @@ private fun queryThreadsFromConversations(
         e.printStackTrace()
         return null
     }
-    return threadsList.sortedByDescending { it.timestamp }
+    return threadsList.distinctBy { it.threadId }.sortedByDescending { it.timestamp }
 }
 
 private fun loadCanonicalAddresses(context: Context): Map<Long, String> {
@@ -3366,17 +3482,15 @@ private fun queryThreadsFromSmsScan(
                 if (address == "Unknown" || address.isBlank()) continue
 
                 if (threadId == 0L) {
-                    try {
-                        threadId = Telephony.Threads.getOrCreateThreadId(context, address)
-                    } catch (e: Exception) {
-                        // ignore
-                    }
+                    // Never call getOrCreateThreadId while reading — it creates empty
+                    // threads and desyncs the inbox from the actual SMS rows.
+                    threadId = syntheticThreadId(address)
                 }
                 if (threadId == 0L) continue
 
                 val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
                 val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
-                val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
+                val date = normalizeProviderDate(if (dateIndex != -1) cursor.getLong(dateIndex) else 0L)
                 val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
                 val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
 
@@ -3420,12 +3534,12 @@ private fun queryThreadsFromSmsScan(
     } catch (e: Exception) {
         e.printStackTrace()
     }
-    return threadsList.sortedByDescending { it.timestamp }
+    return threadsList.distinctBy { it.threadId }.sortedByDescending { it.timestamp }
 }
 
 private fun findThreadForNotification(
     threads: List<SmsThread>,
-    context: Context,
+    @Suppress("UNUSED_PARAMETER") context: Context,
     sender: String?,
     threadId: Long
 ): SmsThread? {
@@ -3433,16 +3547,9 @@ private fun findThreadForNotification(
         threads.find { it.threadId == threadId }?.let { return it }
     }
     if (!sender.isNullOrEmpty()) {
-        threads.find { it.address == sender }?.let { return it }
-        threads.find { PhoneNumberUtils.compare(it.address, sender) }?.let { return it }
-        try {
-            val resolved = Telephony.Threads.getOrCreateThreadId(context, sender)
-            if (resolved > 0L) {
-                threads.find { it.threadId == resolved }?.let { return it }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        threads.find {
+            SmsAddress.addressesMatch(it.address, sender, ::phoneAddressesMatch)
+        }?.let { return it }
     }
     return null
 }
@@ -3451,12 +3558,17 @@ private fun queryMessagesForThread(
     context: Context,
     threadId: Long,
     address: String? = null,
-    deletedMessageIds: Set<Long> = emptySet()
+    deletedMessages: Map<Long, MessageTombstone> = emptyMap(),
+    snippet: String? = null
 ): List<SmsMessage> {
-    val messagesMap = mutableMapOf<Long, SmsMessage>()
-    val projection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
+    val messagesMap = linkedMapOf<Long, SmsMessage>()
+    val smsProjection = arrayOf("_id", "thread_id", "address", "body", "date", "read", "type")
 
-    fun extractMessagesFromCursor(cursor: Cursor?) {
+    fun extractMessagesFromCursor(
+        cursor: Cursor?,
+        loadMmsIfBodyEmpty: Boolean = false,
+        restrictToThreadId: Long? = null
+    ) {
         cursor?.use { c ->
             val idIndex = c.getColumnIndex("_id")
             val threadIdIndex = c.getColumnIndex("thread_id")
@@ -3465,110 +3577,180 @@ private fun queryMessagesForThread(
             val dateIndex = c.getColumnIndex("date")
             val readIndex = c.getColumnIndex("read")
             val typeIndex = c.getColumnIndex("type")
+            val msgBoxIndex = c.getColumnIndex("msg_box")
 
             while (c.moveToNext()) {
                 val id = if (idIndex != -1) c.getLong(idIndex) else 0L
-                if (id == 0L || deletedMessageIds.contains(id)) continue
+                if (id == 0L) continue
                 if (messagesMap.containsKey(id)) continue
 
                 val tId = if (threadIdIndex != -1) c.getLong(threadIdIndex) else threadId
+                if (restrictToThreadId != null && restrictToThreadId > 0L && tId > 0L && tId != restrictToThreadId) {
+                    continue
+                }
                 val msgAddress = if (addressIndex != -1) c.getString(addressIndex) ?: "" else ""
-                val body = if (bodyIndex != -1) c.getString(bodyIndex) ?: "" else ""
-                val date = if (dateIndex != -1) c.getLong(dateIndex) else 0L
+                if (restrictToThreadId != null && tId <= 0L && !address.isNullOrBlank() && msgAddress.isNotBlank()) {
+                    if (!SmsAddress.addressesMatch(msgAddress, address, ::phoneAddressesMatch)) continue
+                }
+                var body = if (bodyIndex != -1) c.getString(bodyIndex) ?: "" else ""
+                if (body.isBlank() && loadMmsIfBodyEmpty) {
+                    body = loadMmsBody(context, id)
+                }
+                if (body.isBlank()) continue
+                val date = normalizeProviderDate(if (dateIndex != -1) c.getLong(dateIndex) else 0L)
                 val read = if (readIndex != -1) c.getInt(readIndex) else 1
-                val type = if (typeIndex != -1) c.getInt(typeIndex) else 1
+                val type = when {
+                    typeIndex != -1 -> c.getInt(typeIndex)
+                    msgBoxIndex != -1 -> c.getInt(msgBoxIndex)
+                    else -> 1
+                }
 
-                messagesMap[id] = SmsMessage(id, tId, msgAddress, body, date, read, type)
+                val message = SmsMessage(id, tId, msgAddress, body, date, read, type)
+                if (deletedMessages.hides(message)) continue
+                messagesMap[id] = message
             }
         }
     }
 
-    if (threadId > 0) {
+    fun queryUri(
+        uri: String,
+        projection: Array<String>?,
+        selection: String?,
+        args: Array<String>?,
+        loadMmsIfBodyEmpty: Boolean = false,
+        restrictToThreadId: Long? = null
+    ) {
         try {
-            val cursor = context.contentResolver.query(
-                Uri.parse("content://sms"),
-                projection,
-                "thread_id = ?",
-                arrayOf(threadId.toString()),
-                "date ASC"
+            extractMessagesFromCursor(
+                context.contentResolver.query(Uri.parse(uri), projection, selection, args, "date ASC"),
+                loadMmsIfBodyEmpty,
+                restrictToThreadId
             )
-            extractMessagesFromCursor(cursor)
         } catch (e: Exception) {
-            e.printStackTrace()
+            try {
+                extractMessagesFromCursor(
+                    context.contentResolver.query(Uri.parse(uri), null, selection, args, "date ASC"),
+                    loadMmsIfBodyEmpty,
+                    restrictToThreadId
+                )
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+            }
         }
+    }
+
+    fun queryByThreadId(targetThreadId: Long) {
+        if (targetThreadId <= 0L) return
+        val threadArg = arrayOf(targetThreadId.toString())
+        queryUri("content://mms-sms/conversations/$targetThreadId", null, null, null, loadMmsIfBodyEmpty = true, restrictToThreadId = targetThreadId)
+        queryUri("content://sms/conversations/$targetThreadId", smsProjection, null, null, restrictToThreadId = targetThreadId)
+        queryUri("content://sms", smsProjection, "thread_id = ?", threadArg, restrictToThreadId = targetThreadId)
+        queryUri("content://sms/inbox", smsProjection, "thread_id = ?", threadArg, restrictToThreadId = targetThreadId)
+        queryUri("content://sms/sent", smsProjection, "thread_id = ?", threadArg, restrictToThreadId = targetThreadId)
+        queryUri("content://mms", arrayOf("_id", "thread_id", "date", "read", "msg_box"), "thread_id = ?", threadArg, loadMmsIfBodyEmpty = true, restrictToThreadId = targetThreadId)
+    }
+
+    fun queryByAddress(targetAddress: String) {
+        val patterns = SmsAddress.sqlLikePatterns(targetAddress)
+        if (patterns.isEmpty()) return
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        for (pattern in patterns) {
+            if (pattern.contains('%')) {
+                clauses.add("address LIKE ?")
+            } else {
+                clauses.add("address = ?")
+            }
+            args.add(pattern)
+        }
+        val selection = clauses.joinToString(" OR ")
+        val argArray = args.toTypedArray()
+        queryUri("content://sms", smsProjection, selection, argArray)
+        queryUri("content://sms/inbox", smsProjection, selection, argArray)
+        queryUri("content://sms/sent", smsProjection, selection, argArray)
+    }
+
+    queryByThreadId(threadId)
+
+    if (!address.isNullOrEmpty() && address != "Unknown") {
+        queryByAddress(address)
     }
 
     if (messagesMap.isEmpty() && !address.isNullOrEmpty() && address != "Unknown") {
         try {
-            val cursor = context.contentResolver.query(
+            context.contentResolver.query(
                 Uri.parse("content://sms"),
-                projection,
-                "address = ?",
-                arrayOf(address),
-                "date ASC"
-            )
-            extractMessagesFromCursor(cursor)
+                smsProjection,
+                null,
+                null,
+                "date DESC"
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndex("_id")
+                val threadIdIndex = cursor.getColumnIndex("thread_id")
+                val addressIndex = cursor.getColumnIndex("address")
+                val bodyIndex = cursor.getColumnIndex("body")
+                val dateIndex = cursor.getColumnIndex("date")
+                val readIndex = cursor.getColumnIndex("read")
+                val typeIndex = cursor.getColumnIndex("type")
+                while (cursor.moveToNext()) {
+                    val msgAddress = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
+                    if (msgAddress.isBlank()) continue
+                    if (!SmsAddress.addressesMatch(msgAddress, address, ::phoneAddressesMatch)) continue
+                    val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
+                    if (id == 0L || messagesMap.containsKey(id)) continue
+                    val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else threadId
+                    val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
+                    if (body.isBlank()) continue
+                    val date = normalizeProviderDate(if (dateIndex != -1) cursor.getLong(dateIndex) else 0L)
+                    val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
+                    val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
+                    val message = SmsMessage(id, tId, msgAddress, body, date, read, type)
+                    if (deletedMessages.hides(message)) continue
+                    messagesMap[id] = message
+                }
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
 
-        if (messagesMap.isEmpty()) {
-            try {
-                val resolved = Telephony.Threads.getOrCreateThreadId(context, address)
-                if (resolved > 0L && resolved != threadId) {
-                    val cursor = context.contentResolver.query(
-                        Uri.parse("content://sms"),
-                        projection,
-                        "thread_id = ?",
-                        arrayOf(resolved.toString()),
-                        "date ASC"
-                    )
-                    extractMessagesFromCursor(cursor)
+    if (messagesMap.isEmpty() && !snippet.isNullOrBlank()) {
+        val prefix = snippet.trim().trimEnd('.', '…', ' ').take(40)
+        if (prefix.length >= 12) {
+            queryUri("content://sms", smsProjection, "body LIKE ?", arrayOf("$prefix%"))
+            val discovered = messagesMap.values.map { it.threadId }.filter { it > 0L }.toSet()
+            for (discoveredId in discovered) {
+                if (discoveredId != threadId) {
+                    queryByThreadId(discoveredId)
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
-        }
-
-        if (messagesMap.isEmpty()) {
-            try {
-                context.contentResolver.query(
-                    Uri.parse("content://sms"),
-                    projection,
-                    null,
-                    null,
-                    "date DESC"
-                )?.use { cursor ->
-                    val idIndex = cursor.getColumnIndex("_id")
-                    val threadIdIndex = cursor.getColumnIndex("thread_id")
-                    val addressIndex = cursor.getColumnIndex("address")
-                    val bodyIndex = cursor.getColumnIndex("body")
-                    val dateIndex = cursor.getColumnIndex("date")
-                    val readIndex = cursor.getColumnIndex("read")
-                    val typeIndex = cursor.getColumnIndex("type")
-                    var scanned = 0
-                    while (cursor.moveToNext() && scanned < 2000) {
-                        scanned++
-                        val msgAddress = if (addressIndex != -1) cursor.getString(addressIndex) ?: "" else ""
-                        if (msgAddress.isBlank()) continue
-                        if (msgAddress != address && !PhoneNumberUtils.compare(msgAddress, address)) continue
-                        val id = if (idIndex != -1) cursor.getLong(idIndex) else 0L
-                        if (id == 0L || deletedMessageIds.contains(id) || messagesMap.containsKey(id)) continue
-                        val tId = if (threadIdIndex != -1) cursor.getLong(threadIdIndex) else threadId
-                        val body = if (bodyIndex != -1) cursor.getString(bodyIndex) ?: "" else ""
-                        val date = if (dateIndex != -1) cursor.getLong(dateIndex) else 0L
-                        val read = if (readIndex != -1) cursor.getInt(readIndex) else 1
-                        val type = if (typeIndex != -1) cursor.getInt(typeIndex) else 1
-                        messagesMap[id] = SmsMessage(id, tId, msgAddress, body, date, read, type)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            val discoveredAddress = messagesMap.values.firstOrNull { it.address.isNotBlank() }?.address
+            if (!discoveredAddress.isNullOrBlank()) {
+                queryByAddress(discoveredAddress)
             }
         }
     }
 
-    return messagesMap.values.sortedBy { it.timestamp }
+    val loaded = messagesMap.values.toList()
+    val pruned = if (!address.isNullOrEmpty() && address != "Unknown") {
+        val matching = loaded.filter {
+            SmsAddress.addressesMatch(it.address, address, ::phoneAddressesMatch)
+        }
+        if (matching.isEmpty()) {
+            loaded
+        } else {
+            val allowedThreadIds = matching.map { it.threadId }.filter { it > 0L }.toSet()
+            loaded.filter { msg ->
+                msg.address.isBlank() ||
+                    SmsAddress.addressesMatch(msg.address, address, ::phoneAddressesMatch) ||
+                    (msg.threadId > 0L && allowedThreadIds.contains(msg.threadId))
+            }
+        }
+    } else {
+        loaded
+    }
+
+    return pruned.sortedBy { it.timestamp }
 }
 
 private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage>? {
@@ -3599,7 +3781,7 @@ private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessag
                 val tId = if (threadIdIndex != -1) c.getLong(threadIdIndex) else 0L
                 val address = if (addressIndex != -1) c.getString(addressIndex) ?: "" else ""
                 val body = if (bodyIndex != -1) c.getString(bodyIndex) ?: "" else ""
-                val date = if (dateIndex != -1) c.getLong(dateIndex) else 0L
+                val date = normalizeProviderDate(if (dateIndex != -1) c.getLong(dateIndex) else 0L)
                 val read = if (readIndex != -1) c.getInt(readIndex) else 1
                 val type = if (typeIndex != -1) c.getInt(typeIndex) else 1
 
@@ -3613,19 +3795,36 @@ private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessag
     return messages
 }
 
-private fun markThreadAsRead(context: Context, threadId: Long) {
-    try {
-        val values = ContentValues().apply {
-            put("read", 1)
+private fun markThreadAsRead(context: Context, threadId: Long, address: String? = null) {
+    val values = ContentValues().apply {
+        put("read", 1)
+    }
+    if (threadId > 0L) {
+        try {
+            context.contentResolver.update(
+                Uri.parse("content://sms/inbox"),
+                values,
+                "thread_id = ? AND read = 0",
+                arrayOf(threadId.toString())
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        context.contentResolver.update(
-            Uri.parse("content://sms/inbox"),
-            values,
-            "thread_id = ? AND read = 0",
-            arrayOf(threadId.toString())
-        )
-    } catch (e: Exception) {
-        e.printStackTrace()
+        return
+    }
+    // Only when the thread could not be resolved. Matching on address alone would
+    // also clear unread messages in other threads from the same sender.
+    if (!address.isNullOrBlank() && address != "Unknown") {
+        try {
+            context.contentResolver.update(
+                Uri.parse("content://sms/inbox"),
+                values,
+                "address = ? AND read = 0",
+                arrayOf(address)
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }
 
@@ -3734,7 +3933,7 @@ fun StarredMessagesScreen(
 @Composable
 fun DeletedThreadsScreen(
     deletedIds: Set<Long>,
-    deletedMsgIds: Set<Long>,
+    deletedMsgTombstones: Map<Long, MessageTombstone>,
     deleteManager: DeleteManager,
     onBack: () -> Unit,
     onRefresh: () -> Unit
@@ -3744,10 +3943,14 @@ fun DeletedThreadsScreen(
     var deletedMessages by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
     var senderNamesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
-    LaunchedEffect(deletedIds, deletedMsgIds) {
+    LaunchedEffect(deletedIds, deletedMsgTombstones) {
         withContext(Dispatchers.IO) {
             val threads = queryAllThreads(context, emptySet(), emptySet(), deletedIds, true)
-            val messages = queryMessagesByIds(context, deletedMsgIds) ?: emptyList()
+            // Only rows the tombstones actually belong to; a recycled id must never
+            // put someone else's message in the trash where it can be purged.
+            val messages = queryMessagesByIds(context, deletedMsgTombstones.keys)
+                ?.filter { deletedMsgTombstones.hides(it) }
+                ?: emptyList()
             val names = messages.map { it.address }.distinct().associateWith { address ->
                 getContactName(context, address) ?: address
             }

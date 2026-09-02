@@ -37,6 +37,9 @@ object DebitParser {
         return DebitParseResult(amountPaise, snippet)
     }
 
+    /** True when the body quotes a rupee amount, i.e. it reads like a money alert. */
+    fun containsCurrencyAmount(body: String): Boolean = extractAmountPaise(body) != null
+
     fun normalizeSenderKey(sender: String): String {
         return sender.trim().uppercase().replace(Regex("[^A-Z0-9-]"), "")
     }

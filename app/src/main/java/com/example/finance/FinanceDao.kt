@@ -49,8 +49,8 @@ interface FinanceDao {
     @Query("SELECT * FROM debits WHERE id = :id LIMIT 1")
     suspend fun getDebitById(id: Long): DebitEntity?
 
-    @Query("SELECT * FROM debits WHERE smsMessageId = :smsMessageId LIMIT 1")
-    suspend fun getDebitBySmsMessageId(smsMessageId: Long): DebitEntity?
+    @Query("SELECT * FROM debits WHERE messageKey = :messageKey LIMIT 1")
+    suspend fun getDebitByMessageKey(messageKey: String): DebitEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertDebit(debit: DebitEntity): Long
@@ -61,11 +61,11 @@ interface FinanceDao {
     @Query("DELETE FROM debits WHERE id = :id")
     suspend fun deleteDebitById(id: Long)
 
-    @Query("DELETE FROM debits WHERE smsMessageId = :smsMessageId")
-    suspend fun deleteDebitBySmsMessageId(smsMessageId: Long)
+    @Query("DELETE FROM debits WHERE messageKey = :messageKey")
+    suspend fun deleteDebitByMessageKey(messageKey: String)
 
-    @Query("SELECT EXISTS(SELECT 1 FROM ignored_sms WHERE smsMessageId = :smsMessageId)")
-    suspend fun isIgnored(smsMessageId: Long): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM ignored_sms WHERE messageKey = :messageKey)")
+    suspend fun isIgnored(messageKey: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertIgnored(ignored: IgnoredSmsEntity)

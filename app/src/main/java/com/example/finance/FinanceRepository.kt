@@ -3,6 +3,7 @@ package com.example.finance
 import android.content.Context
 import android.provider.Telephony
 import com.example.DebitParser
+import com.example.SmsIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -46,25 +47,21 @@ class FinanceRepository(context: Context) {
 
     suspend fun getDebitById(id: Long): DebitEntity? = dao.getDebitById(id)
 
-    suspend fun getDebitBySmsMessageId(smsMessageId: Long): DebitEntity? =
-        dao.getDebitBySmsMessageId(smsMessageId)
-
     suspend fun ingestDebit(
-        smsMessageId: Long,
         amountPaise: Long,
         sender: String,
         snippet: String,
         occurredAt: Long
     ): Long? {
         ensureSeeded()
-        if (dao.isIgnored(smsMessageId)) return null
-        if (dao.getDebitBySmsMessageId(smsMessageId) != null) {
-            return dao.getDebitBySmsMessageId(smsMessageId)?.id
-        }
+        val messageKey = SmsIdentity.key(occurredAt, sender, snippet)
+        if (dao.isIgnored(messageKey)) return null
+        val existing = dao.getDebitByMessageKey(messageKey)
+        if (existing != null) return existing.id
 
         val match = autoCategorizer.resolveCategory(sender, snippet)
         val debit = DebitEntity(
-            smsMessageId = smsMessageId,
+            messageKey = messageKey,
             amountPaise = amountPaise,
             sender = sender,
             snippet = snippet,
@@ -74,7 +71,7 @@ class FinanceRepository(context: Context) {
         )
         val rowId = dao.insertDebit(debit)
         if (rowId > 0L) return rowId
-        return dao.getDebitBySmsMessageId(smsMessageId)?.id
+        return dao.getDebitByMessageKey(messageKey)?.id
     }
 
     suspend fun categorizeDebit(debitId: Long, categoryId: Long, learnSender: Boolean = true) {
@@ -90,14 +87,15 @@ class FinanceRepository(context: Context) {
         }
     }
 
-    suspend fun dontTrack(smsMessageId: Long) {
-        dao.insertIgnored(IgnoredSmsEntity(smsMessageId))
-        dao.deleteDebitBySmsMessageId(smsMessageId)
+    suspend fun dontTrack(messageKey: String) {
+        if (messageKey.isBlank()) return
+        dao.insertIgnored(IgnoredSmsEntity(messageKey))
+        dao.deleteDebitByMessageKey(messageKey)
     }
 
     suspend fun dontTrackByDebitId(debitId: Long) {
         val debit = dao.getDebitById(debitId) ?: return
-        dontTrack(debit.smsMessageId)
+        dontTrack(debit.messageKey)
     }
 
     suspend fun addCategory(name: String, colorArgb: Int): Long {
@@ -186,7 +184,6 @@ class FinanceRepository(context: Context) {
         val since = System.currentTimeMillis() - days.toLong() * 24 * 60 * 60 * 1000
         var ingested = 0
         val projection = arrayOf(
-            Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
             Telephony.Sms.BODY,
             Telephony.Sms.DATE
@@ -201,23 +198,19 @@ class FinanceRepository(context: Context) {
             selectionArgs,
             "${Telephony.Sms.DATE} DESC"
         )?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(Telephony.Sms._ID)
             val addressIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
             val bodyIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
             val dateIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
 
             while (cursor.moveToNext()) {
-                val messageId = cursor.getLong(idIndex)
-                if (dao.isIgnored(messageId)) continue
-                if (dao.getDebitBySmsMessageId(messageId) != null) continue
-
                 val body = cursor.getString(bodyIndex) ?: continue
                 val sender = cursor.getString(addressIndex) ?: continue
                 val date = cursor.getLong(dateIndex)
                 val parsed = DebitParser.parse(body, sender) ?: continue
+                val messageKey = SmsIdentity.key(date, sender, parsed.snippet)
+                if (dao.isIgnored(messageKey) || dao.getDebitByMessageKey(messageKey) != null) continue
 
                 val inserted = ingestDebit(
-                    smsMessageId = messageId,
                     amountPaise = parsed.amountPaise,
                     sender = sender,
                     snippet = parsed.snippet,

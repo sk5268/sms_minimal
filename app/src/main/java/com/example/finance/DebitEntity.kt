@@ -6,11 +6,11 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "debits",
-    indices = [Index(value = ["smsMessageId"], unique = true)]
+    indices = [Index(value = ["messageKey"], unique = true)]
 )
 data class DebitEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val smsMessageId: Long,
+    val messageKey: String,
     val amountPaise: Long,
     val sender: String,
     val snippet: String,

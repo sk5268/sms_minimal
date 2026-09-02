@@ -145,7 +145,7 @@ class SmsReceiver : BroadcastReceiver() {
             }
         }
 
-        val otp = extractOTP(body)
+        val otp = OtpClassifier.extractOtp(body)
 
         val messageId = insertedUri?.let { uri ->
             try {
@@ -155,25 +155,22 @@ class SmsReceiver : BroadcastReceiver() {
             }
         }
 
-        if (messageId != null && otp != null) {
-            scheduleOtpAutoDelete(context, messageId)
+        if (messageId != null && OtpClassifier.isAutoDeletable(body, sender)) {
+            scheduleOtpAutoDelete(context, messageId, timestamp, sender)
         }
 
         var debitId: Long? = null
         var debitAmountPaise: Long? = null
-        if (messageId != null) {
-            val parsedDebit = DebitParser.parse(body, sender)
-            if (parsedDebit != null) {
-                debitAmountPaise = parsedDebit.amountPaise
-                debitId = runBlocking {
-                    FinanceRepository.getInstance(context).ingestDebit(
-                        smsMessageId = messageId,
-                        amountPaise = parsedDebit.amountPaise,
-                        sender = sender,
-                        snippet = parsedDebit.snippet,
-                        occurredAt = timestamp
-                    )
-                }
+        val parsedDebit = DebitParser.parse(body, sender)
+        if (parsedDebit != null) {
+            debitAmountPaise = parsedDebit.amountPaise
+            debitId = runBlocking {
+                FinanceRepository.getInstance(context).ingestDebit(
+                    amountPaise = parsedDebit.amountPaise,
+                    sender = sender,
+                    snippet = parsedDebit.snippet,
+                    occurredAt = timestamp
+                )
             }
         }
 
@@ -189,14 +186,19 @@ class SmsReceiver : BroadcastReceiver() {
             threadId = threadId,
             messageId = messageId,
             debitId = debitId,
-            debitAmountPaise = debitAmountPaise
+            debitAmountPaise = debitAmountPaise,
+            debitSnippet = parsedDebit?.snippet,
+            debitOccurredAt = timestamp
         )
     }
 
-    private fun scheduleOtpAutoDelete(context: Context, messageId: Long) {
+    private fun scheduleOtpAutoDelete(context: Context, messageId: Long, messageDate: Long, sender: String) {
+        if (messageDate <= 0L) return
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
         val intent = Intent(context, OtpDeleteReceiver::class.java).apply {
-            putExtra("message_id", messageId)
+            putExtra(OtpDeleteReceiver.EXTRA_MESSAGE_ID, messageId)
+            putExtra(OtpDeleteReceiver.EXTRA_MESSAGE_DATE, messageDate)
+            putExtra(OtpDeleteReceiver.EXTRA_ADDRESS, sender)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
@@ -222,37 +224,6 @@ class SmsReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-    }
-
-    private fun extractOTP(body: String): String? {
-        val lowercaseBody = body.lowercase()
-        val strongKeywords = listOf(
-            "otp",
-            "one time password",
-            "one-time password",
-            "verification code",
-            "one time pin",
-            "one-time pin"
-        )
-        if (strongKeywords.none { lowercaseBody.contains(it) }) return null
-
-        val digitPattern = Regex("\\b\\d{4,8}\\b")
-        val matches = digitPattern.findAll(body).map { it.value }.toList()
-        if (matches.isNotEmpty()) {
-            return matches.find { it.length == 6 } ?: matches.first()
-        }
-
-        val alphaPattern = Regex("(?i)\\b(?:code|otp)\\s*[:= ]\\s*([a-zA-Z0-9]{4,8})\\b")
-        val alphaMatch = alphaPattern.find(body)
-        if (alphaMatch != null) {
-            val candidate = alphaMatch.groupValues[1]
-            val containsDigit = candidate.any { it.isDigit() }
-            val allCaps = candidate.all { it.isUpperCase() || it.isDigit() }
-            if (containsDigit || (allCaps && candidate.length >= 4)) {
-                return candidate
-            }
-        }
-        return null
     }
 
     private fun getContactName(context: Context, phoneNumber: String): String? {
@@ -291,7 +262,9 @@ class SmsReceiver : BroadcastReceiver() {
         threadId: Long,
         messageId: Long?,
         debitId: Long?,
-        debitAmountPaise: Long?
+        debitAmountPaise: Long?,
+        debitSnippet: String?,
+        debitOccurredAt: Long
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -380,12 +353,12 @@ class SmsReceiver : BroadcastReceiver() {
             )
         }
 
-        if (debitId != null && debitAmountPaise != null && messageId != null) {
+        if (debitId != null && debitAmountPaise != null && !debitSnippet.isNullOrBlank()) {
             val categorizeIntent = Intent(context, CategorizeOverlayActivity::class.java).apply {
                 putExtra(CategorizeOverlayActivity.EXTRA_DEBIT_ID, debitId)
                 putExtra(CategorizeOverlayActivity.EXTRA_AMOUNT_PAISE, debitAmountPaise)
                 putExtra(CategorizeOverlayActivity.EXTRA_SENDER, sender)
-                putExtra(CategorizeOverlayActivity.EXTRA_SNIPPET, body.take(160))
+                putExtra(CategorizeOverlayActivity.EXTRA_SNIPPET, debitSnippet)
                 putExtra(CategorizeOverlayActivity.EXTRA_NOTIF_ID, notifId)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
@@ -403,7 +376,10 @@ class SmsReceiver : BroadcastReceiver() {
 
             val dontTrackIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_DONT_TRACK
-                putExtra(NotificationActionReceiver.EXTRA_SMS_MESSAGE_ID, messageId)
+                putExtra(
+                    NotificationActionReceiver.EXTRA_MESSAGE_KEY,
+                    SmsIdentity.key(debitOccurredAt, sender, debitSnippet)
+                )
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
                 putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }

@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.SmsIdentity
 
 @Database(
     entities = [
@@ -14,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SenderCategoryMemoryEntity::class,
         KeywordRuleEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class FinanceDatabase : RoomDatabase() {
@@ -24,6 +26,78 @@ abstract class FinanceDatabase : RoomDatabase() {
         @Volatile
         private var instance: FinanceDatabase? = null
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `debits_new` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `messageKey` TEXT NOT NULL,
+                        `amountPaise` INTEGER NOT NULL,
+                        `sender` TEXT NOT NULL,
+                        `snippet` TEXT NOT NULL,
+                        `categoryId` INTEGER NOT NULL,
+                        `occurredAt` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `autoCategorized` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                val seenKeys = HashSet<String>()
+                db.query(
+                    "SELECT id, sender, snippet, amountPaise, categoryId, occurredAt, createdAt, autoCategorized FROM debits"
+                ).use { cursor ->
+                    val idIndex = cursor.getColumnIndex("id")
+                    val senderIndex = cursor.getColumnIndex("sender")
+                    val snippetIndex = cursor.getColumnIndex("snippet")
+                    val amountIndex = cursor.getColumnIndex("amountPaise")
+                    val categoryIndex = cursor.getColumnIndex("categoryId")
+                    val occurredIndex = cursor.getColumnIndex("occurredAt")
+                    val createdIndex = cursor.getColumnIndex("createdAt")
+                    val autoIndex = cursor.getColumnIndex("autoCategorized")
+                    val insert = db.compileStatement(
+                        """
+                        INSERT INTO `debits_new`
+                            (id, messageKey, amountPaise, sender, snippet, categoryId, occurredAt, createdAt, autoCategorized)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """.trimIndent()
+                    )
+                    while (cursor.moveToNext()) {
+                        val sender = cursor.getString(senderIndex).orEmpty()
+                        val snippet = cursor.getString(snippetIndex).orEmpty()
+                        val occurredAt = cursor.getLong(occurredIndex)
+                        val messageKey = SmsIdentity.key(occurredAt, sender, snippet)
+                        if (!seenKeys.add(messageKey)) continue
+                        insert.clearBindings()
+                        insert.bindLong(1, cursor.getLong(idIndex))
+                        insert.bindString(2, messageKey)
+                        insert.bindLong(3, cursor.getLong(amountIndex))
+                        insert.bindString(4, sender)
+                        insert.bindString(5, snippet)
+                        insert.bindLong(6, cursor.getLong(categoryIndex))
+                        insert.bindLong(7, occurredAt)
+                        insert.bindLong(8, cursor.getLong(createdIndex))
+                        insert.bindLong(9, cursor.getLong(autoIndex))
+                        insert.executeInsert()
+                    }
+                    insert.close()
+                }
+
+                db.execSQL("DROP TABLE `debits`")
+                db.execSQL("ALTER TABLE `debits_new` RENAME TO `debits`")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_debits_messageKey` ON `debits` (`messageKey`)")
+
+                // Old ignore rows were only a recycled telephony _id. They cannot be
+                // mapped to a real message, so they are dropped rather than poisoning
+                // future transactions that inherit that id.
+                db.execSQL("DROP TABLE IF EXISTS `ignored_sms`")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `ignored_sms` (`messageKey` TEXT NOT NULL, PRIMARY KEY(`messageKey`))"
+                )
+            }
+        }
+
         fun getInstance(context: Context): FinanceDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -31,6 +105,7 @@ abstract class FinanceDatabase : RoomDatabase() {
                     FinanceDatabase::class.java,
                     "finance.db"
                 )
+                    .addMigrations(MIGRATION_1_2)
                     .addCallback(SeedCallback())
                     .build()
                     .also { instance = it }

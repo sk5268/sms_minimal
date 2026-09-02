@@ -30,6 +30,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val EXTRA_AMOUNT_PAISE = "com.example.EXTRA_AMOUNT_PAISE"
         const val EXTRA_SNIPPET = "com.example.EXTRA_SNIPPET"
         const val EXTRA_SMS_MESSAGE_ID = "com.example.EXTRA_SMS_MESSAGE_ID"
+        const val EXTRA_MESSAGE_KEY = "com.example.EXTRA_MESSAGE_KEY"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -88,10 +89,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 }
             }
             ACTION_DONT_TRACK -> {
-                val smsMessageId = intent.getLongExtra(EXTRA_SMS_MESSAGE_ID, -1L)
-                if (smsMessageId > 0L) {
+                val messageKey = intent.getStringExtra(EXTRA_MESSAGE_KEY).orEmpty()
+                if (messageKey.isNotBlank()) {
                     runBlocking {
-                        FinanceRepository.getInstance(appContext).dontTrack(smsMessageId)
+                        FinanceRepository.getInstance(appContext).dontTrack(messageKey)
                     }
                     Toast.makeText(appContext, "Removed from finance", Toast.LENGTH_SHORT).show()
                 }
@@ -120,17 +121,12 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
         }
 
-        var deleted = false
-        if (messageId > 0L) {
-            deleted = deleteSmsById(context, messageId)
-            DeleteManager(context).softDeleteMessage(messageId)
-        }
-
-        val sender = intent.getStringExtra(EXTRA_SENDER)
-        if (!deleted && !sender.isNullOrEmpty()) {
-            deleted = deleteLatestInboxFromSender(context, sender)
-        }
-        return deleted
+        // Soft delete only. Hard-deleting here frees the row's id while the id stays
+        // blacklisted for six hours, and the telephony provider hands that same id to
+        // the next incoming SMS, which then gets hidden and later destroyed.
+        // It also keeps the message restorable from Recently Deleted.
+        if (messageId <= 0L) return false
+        return DeleteManager(context).softDeleteMessage(context, messageId)
     }
 
     private fun dismissSenderNotification(context: Context, sender: String?, notifId: Int) {
