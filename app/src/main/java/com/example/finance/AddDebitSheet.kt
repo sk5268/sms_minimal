@@ -194,7 +194,7 @@ fun AddDebitSheet(
                 ) {
                     categories.forEach { category ->
                         val selected = selectedCategoryId == category.id
-                        val catColor = Color(category.colorArgb)
+                        val catColor = modernCategoryColor(category)
                         Box(
                             modifier = Modifier
                                 .background(

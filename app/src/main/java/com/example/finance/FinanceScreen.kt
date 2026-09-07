@@ -43,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -129,12 +130,17 @@ fun FinanceScreen() {
     var showAddDebit by remember { mutableStateOf(false) }
     var newCategoryName by remember { mutableStateOf("") }
     var isRecentDebitsExpanded by remember { mutableStateOf(false) }
+    var selectedCategoryId by remember { mutableStateOf<Long?>(null) }
 
     val categoryMap = categories.associateBy { it.id }
 
     val currentCal = remember { Calendar.getInstance() }
     var selectedYear by remember { mutableStateOf(currentCal.get(Calendar.YEAR)) }
     var selectedMonth by remember { mutableStateOf(currentCal.get(Calendar.MONTH)) }
+
+    LaunchedEffect(selectedYear, selectedMonth) {
+        selectedCategoryId = null
+    }
 
     val (monthStartMs, monthEndMs) = remember(selectedYear, selectedMonth) {
         val cal = Calendar.getInstance().apply {
@@ -237,6 +243,7 @@ fun FinanceScreen() {
                 .groupBy { localDayStart(it.occurredAt) }
                 .mapValues { (_, debits) -> debits.sumOf { it.amountPaise } }
             CategorySeries(
+                categoryId = categoryId,
                 name = name,
                 color = Color.Transparent,
                 points = monthDayStarts.map { day -> day to (dailyMap[day] ?: 0L) }
@@ -261,8 +268,14 @@ fun FinanceScreen() {
         uncategorizedTotal.toDouble() / monthTotal
     } else 0.0
 
+    val selectedCategory = selectedCategoryId?.let { categoryMap[it] }
+    val selectedCategoryDebits = if (selectedCategoryId != null) {
+        monthDebits.filter { it.categoryId == selectedCategoryId }
+    } else emptyList()
+    val selectedCategoryColor = selectedCategory?.let { modernCategoryColor(it) }
+
     val fabGradient = Brush.linearGradient(
-        colors = listOf(Color(0xFF4086FF), Color(0xFF00E5FF))
+        colors = listOf(Color(0xFF6366F1), Color(0xFF38BDF8))
     )
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -364,51 +377,90 @@ fun FinanceScreen() {
                         categoryMap = categoryMap
                     )
                     val multiLineSeries = categoryDailySeries.mapIndexed { index, series ->
-                        series.copy(color = barColors[index])
+                        series.copy(categoryId = totals[index].first, color = barColors[index])
                     }
-                    val chartSlices = totals.mapIndexed { index, (_, name, amount) ->
-                        CategoryChartSlice(name, amount, barColors[index])
+                    val chartSlices = totals.mapIndexed { index, (catId, name, amount) ->
+                        CategoryChartSlice(catId, name, amount, barColors[index])
+                    }
+
+                    val selectedSlice = chartSlices.find { it.categoryId == selectedCategoryId }
+                    val centerSubtitle = if (selectedSlice != null) selectedSlice.name else "Total Spend"
+                    val centerAmount = if (selectedSlice != null) formatRupees(selectedSlice.amount) else formatRupees(monthTotal)
+                    val centerTitle = if (selectedSlice != null) {
+                        val pct = if (monthTotal > 0) (selectedSlice.amount * 100 / monthTotal).toInt() else 0
+                        "$pct% of total"
+                    } else {
+                        "$monthShortName"
                     }
 
                     CategoryDonutChart(
                         slices = chartSlices,
+                        selectedCategoryId = selectedCategoryId,
+                        onSliceClick = { clickedId ->
+                            selectedCategoryId = if (clickedId == -1L || selectedCategoryId == clickedId) null else clickedId
+                        },
+                        centerSubtitle = centerSubtitle,
+                        centerAmount = centerAmount,
+                        centerTitle = centerTitle,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 8.dp)
                     )
 
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        totals.forEachIndexed { index, (_, name, amount) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        totals.forEachIndexed { index, (catId, name, amount) ->
                             val pct = if (monthTotal > 0) (amount * 100 / monthTotal).toInt() else 0
+                            val isSelected = selectedCategoryId == catId
+                            val isAnySelected = selectedCategoryId != null
+                            val rowAlpha = if (isAnySelected && !isSelected) 0.40f else 1.0f
+                            val catColor = barColors[index]
+
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (isSelected) catColor.copy(alpha = 0.14f) else Color.Transparent,
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .then(
+                                        if (isSelected) Modifier.border(
+                                            1.dp,
+                                            catColor.copy(alpha = 0.45f),
+                                            RoundedCornerShape(10.dp)
+                                        ) else Modifier
+                                    )
+                                    .clickable {
+                                        selectedCategoryId = if (selectedCategoryId == catId) null else catId
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(10.dp)
-                                        .background(barColors[index], RoundedCornerShape(50))
+                                        .size(if (isSelected) 12.dp else 10.dp)
+                                        .background(catColor.copy(alpha = rowAlpha), RoundedCornerShape(50))
                                 )
                                 Text(
                                     text = name,
-                                    color = TextPrimary,
+                                    color = TextPrimary.copy(alpha = rowAlpha),
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Text(
                                     text = "$pct%",
-                                    color = TextSecondary,
+                                    color = TextSecondary.copy(alpha = rowAlpha),
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp
                                 )
                                 Text(
                                     text = formatRupees(amount),
-                                    color = TextPrimary,
+                                    color = if (isSelected) catColor else TextPrimary.copy(alpha = rowAlpha),
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                 )
                             }
                         }
@@ -417,109 +469,58 @@ fun FinanceScreen() {
                     Spacer(modifier = Modifier.height(12.dp))
                     CategoryMultiLineChart(
                         series = multiLineSeries,
-                        dayStarts = monthDayStarts
+                        dayStarts = monthDayStarts,
+                        selectedCategoryId = selectedCategoryId
                     )
                 }
             }
 
-            if (uncategorizedShare > 0.5 && attentionDebits.isNotEmpty()) {
+            if (selectedCategoryId != null) {
                 item {
-                    Box(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(AccentBlue.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                            .border(1.dp, AccentBlue.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = "Most spending is uncategorized — tap a debit to assign a category.",
-                            color = TextPrimary.copy(alpha = 0.85f),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp
-                        )
-                    }
-                }
-            }
-
-            if (attentionDebits.isNotEmpty()) {
-                item { SectionLabel("Needs attention") }
-                items(attentionDebits, key = { it.id }) { debit ->
-                    DebitRow(
-                        debit = debit,
-                        categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
-                        categoryColor = categoryMap[debit.categoryId]?.let { Color(it.colorArgb) },
-                        onTap = {
-                            if (debit.isManualEntry()) editManualDebit = debit
-                            else recategorizeDebit = debit
-                        },
-                        onDontTrack = {
-                            scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debit.id) }
-                            Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
-            }
-
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { isRecentDebitsExpanded = !isRecentDebitsExpanded }
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            .padding(top = 4.dp, bottom = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        SectionLabel("Debits · $monthShortName (${monthDebits.size})")
-                        Icon(
-                            imageVector = if (isRecentDebitsExpanded) Icons.Default.KeyboardArrowUp
-                            else Icons.Default.KeyboardArrowDown,
-                            contentDescription = if (isRecentDebitsExpanded) "Collapse" else "Expand",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(
-                            text = "Add debit",
-                            color = AccentGreen,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            modifier = Modifier.clickable { showAddDebit = true }
-                        )
-                        Text(
-                            text = if (isScanning) "Scanning…" else "Scan inbox",
-                            color = AccentBlue,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            modifier = Modifier.clickable(enabled = !isScanning) {
-                                isScanning = true
-                                scope.launch(Dispatchers.IO) {
-                                    val count = repo.scanInbox()
-                                    withContext(Dispatchers.Main) {
-                                        isScanning = false
-                                        Toast.makeText(context, "Added $count debits", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(selectedCategoryColor ?: AccentBlue, RoundedCornerShape(50))
+                            )
+                            SectionLabel("${selectedCategory?.name ?: "Category"} debits (${selectedCategoryDebits.size})")
+                        }
+                        Box(
+                            modifier = Modifier
+                                .background(DarkSurfaceElevated, RoundedCornerShape(8.dp))
+                                .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+                                .clickable { selectedCategoryId = null }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = "✕ Clear filter",
+                                color = AccentBlue,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
-            }
 
-            if (isRecentDebitsExpanded) {
-                if (recentDebits.isEmpty()) {
-                    item { EmptyHint("No other debits in $monthShortName.") }
+                if (selectedCategoryDebits.isEmpty()) {
+                    item { EmptyHint("No debits recorded in ${selectedCategory?.name ?: "this category"} for $monthShortName.") }
                 } else {
-                    items(recentDebits, key = { it.id }) { debit ->
+                    items(selectedCategoryDebits, key = { it.id }) { debit ->
                         DebitRow(
                             debit = debit,
-                            categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
-                            categoryColor = categoryMap[debit.categoryId]?.let { Color(it.colorArgb) },
+                            categoryName = selectedCategory?.name ?: "Uncategorized",
+                            categoryColor = selectedCategoryColor,
                             showAutoBadge = debit.autoCategorized,
                             onTap = {
                                 if (debit.isManualEntry()) editManualDebit = debit
@@ -530,6 +531,118 @@ fun FinanceScreen() {
                                 Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
                             }
                         )
+                    }
+                }
+            } else {
+                if (uncategorizedShare > 0.5 && attentionDebits.isNotEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(AccentBlue.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                                .border(1.dp, AccentBlue.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "Most spending is uncategorized — tap a debit to assign a category.",
+                                color = TextPrimary.copy(alpha = 0.85f),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+                }
+
+                if (attentionDebits.isNotEmpty()) {
+                    item { SectionLabel("Needs attention") }
+                    items(attentionDebits, key = { it.id }) { debit ->
+                        DebitRow(
+                            debit = debit,
+                            categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
+                            categoryColor = categoryMap[debit.categoryId]?.let { modernCategoryColor(it) },
+                            onTap = {
+                                if (debit.isManualEntry()) editManualDebit = debit
+                                else recategorizeDebit = debit
+                            },
+                            onDontTrack = {
+                                scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debit.id) }
+                                Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
+                }
+
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isRecentDebitsExpanded = !isRecentDebitsExpanded }
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SectionLabel("Debits · $monthShortName (${monthDebits.size})")
+                            Icon(
+                                imageVector = if (isRecentDebitsExpanded) Icons.Default.KeyboardArrowUp
+                                else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (isRecentDebitsExpanded) "Collapse" else "Expand",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(
+                                text = "Add debit",
+                                color = AccentGreen,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                modifier = Modifier.clickable { showAddDebit = true }
+                            )
+                            Text(
+                                text = if (isScanning) "Scanning…" else "Scan inbox",
+                                color = AccentBlue,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                modifier = Modifier.clickable(enabled = !isScanning) {
+                                    isScanning = true
+                                    scope.launch(Dispatchers.IO) {
+                                        val count = repo.scanInbox()
+                                        withContext(Dispatchers.Main) {
+                                            isScanning = false
+                                            Toast.makeText(context, "Added $count debits", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (isRecentDebitsExpanded) {
+                    if (recentDebits.isEmpty()) {
+                        item { EmptyHint("No other debits in $monthShortName.") }
+                    } else {
+                        items(recentDebits, key = { it.id }) { debit ->
+                            DebitRow(
+                                debit = debit,
+                                categoryName = categoryMap[debit.categoryId]?.name ?: "Uncategorized",
+                                categoryColor = categoryMap[debit.categoryId]?.let { modernCategoryColor(it) },
+                                showAutoBadge = debit.autoCategorized,
+                                onTap = {
+                                    if (debit.isManualEntry()) editManualDebit = debit
+                                    else recategorizeDebit = debit
+                                },
+                                onDontTrack = {
+                                    scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debit.id) }
+                                    Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -748,12 +861,7 @@ fun FinanceScreen() {
                             newCategoryName = ""
                             showAddCategory = false
                             scope.launch(Dispatchers.IO) {
-                                val paletteColors = listOf(
-                                    0xFFFF9F0A.toInt(), 0xFF4086FF.toInt(), 0xFF32D74B.toInt(),
-                                    0xFFFF453A.toInt(), 0xFF00E5FF.toInt(), 0xFFBF5AF2.toInt(),
-                                    0xFFFFD60A.toInt(), 0xFFFF375F.toInt(), 0xFF64D2FF.toInt(),
-                                    0xFFE040FB.toInt()
-                                )
+                                val paletteColors = CategoryChartPalette.map { it.toArgb() }
                                 val existingColors = categories.map { it.colorArgb }.toSet()
                                 val color = paletteColors.firstOrNull { it !in existingColors }
                                     ?: paletteColors[categories.size % paletteColors.size]
@@ -901,7 +1009,7 @@ private fun EmptyHint(text: String) {
 
 @Composable
 private fun CategoryChip(category: CategoryEntity, onClick: () -> Unit) {
-    val catColor = Color(category.colorArgb)
+    val catColor = modernCategoryColor(category)
     Box(
         modifier = Modifier
             .background(catColor.copy(alpha = 0.15f), RoundedCornerShape(14.dp))

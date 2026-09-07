@@ -188,15 +188,16 @@ fun CategorizeOverlayContent(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         categories.forEach { category ->
+                            val catColor = com.example.finance.modernCategoryColor(category)
                             Box(
                                 modifier = Modifier
                                     .background(
-                                        Color(category.colorArgb).copy(alpha = 0.18f),
+                                        catColor.copy(alpha = 0.18f),
                                         RoundedCornerShape(16.dp)
                                     )
                                     .border(
                                         1.dp,
-                                        Color(category.colorArgb).copy(alpha = 0.5f),
+                                        catColor.copy(alpha = 0.5f),
                                         RoundedCornerShape(16.dp)
                                     )
                                     .clickable {
@@ -215,7 +216,7 @@ fun CategorizeOverlayContent(
                             ) {
                                 Text(
                                     text = category.name.uppercase(),
-                                    color = Color(category.colorArgb),
+                                    color = catColor,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
