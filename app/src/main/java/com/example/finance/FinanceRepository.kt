@@ -75,11 +75,18 @@ class FinanceRepository(context: Context) {
         return dao.getDebitByMessageKey(messageKey)?.id
     }
 
-    suspend fun categorizeDebit(debitId: Long, categoryId: Long, learnSender: Boolean = true) {
+    suspend fun categorizeDebit(
+        debitId: Long,
+        categoryId: Long,
+        note: String? = null,
+        learnSender: Boolean = true
+    ) {
         val debit = dao.getDebitById(debitId) ?: return
+        val trimmedNote = note?.trim()?.ifBlank { null }
         dao.updateDebit(
             debit.copy(
                 categoryId = categoryId,
+                note = trimmedNote ?: debit.note,
                 autoCategorized = false
             )
         )
@@ -112,7 +119,8 @@ class FinanceRepository(context: Context) {
     ): Long? {
         ensureSeeded()
         if (amountPaise <= 0L) return null
-        val snippet = note.trim().ifBlank { "Manual entry" }
+        val cleanNote = note.trim()
+        val snippet = cleanNote.ifBlank { "Manual entry" }
         val sender = payee.trim().ifBlank { "Cash" }
         val messageKey = "manual:${UUID.randomUUID()}"
         val resolvedCategoryId = categoryId ?: run {
@@ -126,7 +134,8 @@ class FinanceRepository(context: Context) {
             snippet = snippet,
             categoryId = resolvedCategoryId,
             occurredAt = occurredAt,
-            autoCategorized = categoryId == null
+            autoCategorized = categoryId == null,
+            note = cleanNote.ifBlank { null }
         )
         val rowId = dao.insertDebit(debit)
         return if (rowId > 0L) rowId else dao.getDebitByMessageKey(messageKey)?.id
@@ -142,7 +151,8 @@ class FinanceRepository(context: Context) {
     ): Boolean {
         val debit = dao.getDebitById(debitId) ?: return false
         if (!debit.isManualEntry() || amountPaise <= 0L) return false
-        val snippet = note.trim().ifBlank { "Manual entry" }
+        val cleanNote = note.trim()
+        val snippet = cleanNote.ifBlank { "Manual entry" }
         val sender = payee.trim().ifBlank { "Cash" }
         dao.updateDebit(
             debit.copy(
@@ -151,7 +161,8 @@ class FinanceRepository(context: Context) {
                 snippet = snippet,
                 categoryId = categoryId,
                 occurredAt = occurredAt,
-                autoCategorized = false
+                autoCategorized = false,
+                note = cleanNote.ifBlank { null }
             )
         )
         return true

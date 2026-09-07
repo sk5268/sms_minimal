@@ -66,6 +66,13 @@ val CategoryChartPalette = listOf(
     Color(0xFF64748B)  // Slate Grey
 )
 
+fun pickNextCategoryColor(existingCategories: List<CategoryEntity>): Int {
+    val paletteColors = CategoryChartPalette.map { it.toArgb() }
+    val existingColors = existingCategories.map { it.colorArgb }.toSet()
+    return paletteColors.firstOrNull { it !in existingColors }
+        ?: paletteColors[existingCategories.size % paletteColors.size]
+}
+
 // Maps legacy high-contrast neon colors to modern eye-pleasing tones
 private val LegacyColorMigrationMap = mapOf(
     0xFFFF9F0A.toInt() to Color(0xFFFB923C), // Warm Tangerine

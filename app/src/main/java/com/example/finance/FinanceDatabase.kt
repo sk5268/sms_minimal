@@ -16,7 +16,7 @@ import com.example.SmsIdentity
         SenderCategoryMemoryEntity::class,
         KeywordRuleEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class FinanceDatabase : RoomDatabase() {
@@ -98,6 +98,13 @@ abstract class FinanceDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `debits` ADD COLUMN `note` TEXT DEFAULT NULL")
+                db.execSQL("UPDATE `debits` SET `note` = `snippet` WHERE `messageKey` LIKE 'manual:%' AND `snippet` != 'Manual entry'")
+            }
+        }
+
         fun getInstance(context: Context): FinanceDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -105,7 +112,8 @@ abstract class FinanceDatabase : RoomDatabase() {
                     FinanceDatabase::class.java,
                     "finance.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .createFromAsset("finance.db")
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .addCallback(SeedCallback())
                     .build()
                     .also { instance = it }

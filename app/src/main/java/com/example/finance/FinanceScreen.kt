@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -57,6 +59,7 @@ import com.example.ui.theme.AccentRed
 import com.example.ui.theme.BorderColor
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceElevated
+import com.example.ui.theme.PureWhite
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
@@ -738,35 +741,139 @@ fun FinanceScreen() {
     }
 
     if (recategorizeDebit != null) {
+        val debitToRecat = recategorizeDebit!!
+        var recatNote by remember(debitToRecat.id) {
+            mutableStateOf(debitToRecat.note ?: "")
+        }
+        var recatCategoryId by remember(debitToRecat.id) {
+            mutableStateOf(debitToRecat.categoryId)
+        }
+        var recatNoteError by remember { mutableStateOf(false) }
+
         AlertDialog(
             onDismissRequest = { recategorizeDebit = null },
             containerColor = DarkSurface,
             title = {
-                Text(
-                    text = formatRupees(recategorizeDebit!!.amountPaise),
-                    color = TextPrimary,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 18.sp
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = formatRupees(debitToRecat.amountPaise),
+                        color = TextPrimary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = debitToRecat.sender,
+                        color = TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
+                }
             },
             text = {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    categories.forEach { category ->
-                        CategoryChip(category) {
-                            val debit = recategorizeDebit!!
-                            scope.launch(Dispatchers.IO) {
-                                repo.categorizeDebit(debit.id, category.id)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "NOTE * (REQUIRED)",
+                            color = if (recatNoteError && recatNote.isBlank()) AccentRed else TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedTextField(
+                            value = recatNote,
+                            onValueChange = {
+                                recatNote = it
+                                if (it.isNotBlank()) recatNoteError = false
+                            },
+                            singleLine = true,
+                            isError = recatNoteError && recatNote.isBlank(),
+                            placeholder = {
+                                Text(
+                                    "e.g. Lunch, Grocery...",
+                                    color = TextSecondary.copy(alpha = 0.5f),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                cursorColor = AccentGreen,
+                                focusedBorderColor = AccentGreen,
+                                unfocusedBorderColor = BorderColor,
+                                errorBorderColor = AccentRed
+                            )
+                        )
+                    }
+
+                    Text(
+                        text = "CATEGORY",
+                        color = TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        categories.filter { it.name != "Uncategorized" }.forEach { category ->
+                            val isSelected = recatCategoryId == category.id
+                            val catColor = modernCategoryColor(category)
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        if (isSelected) catColor.copy(alpha = 0.35f) else catColor.copy(alpha = 0.12f),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .border(
+                                        if (isSelected) 2.dp else 1.dp,
+                                        if (isSelected) catColor else catColor.copy(alpha = 0.4f),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable {
+                                        recatCategoryId = category.id
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = if (isSelected) "✓ ${category.name}" else category.name,
+                                    color = if (isSelected) PureWhite else catColor,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
                             }
-                            recategorizeDebit = null
-                            Toast.makeText(context, "Logged · ${category.name}", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
             },
             confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanNote = recatNote.trim()
+                        if (cleanNote.isBlank()) {
+                            recatNoteError = true
+                            Toast.makeText(context, "Note is mandatory", Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        val catId = recatCategoryId ?: debitToRecat.categoryId
+                        scope.launch(Dispatchers.IO) {
+                            repo.categorizeDebit(debitToRecat.id, catId, note = cleanNote)
+                        }
+                        recategorizeDebit = null
+                        val catName = categories.find { it.id == catId }?.name ?: "Category"
+                        Toast.makeText(context, "Logged · $catName", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Save", color = AccentGreen, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
                 TextButton(onClick = { recategorizeDebit = null }) {
                     Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
                 }
@@ -861,10 +968,7 @@ fun FinanceScreen() {
                             newCategoryName = ""
                             showAddCategory = false
                             scope.launch(Dispatchers.IO) {
-                                val paletteColors = CategoryChartPalette.map { it.toArgb() }
-                                val existingColors = categories.map { it.colorArgb }.toSet()
-                                val color = paletteColors.firstOrNull { it !in existingColors }
-                                    ?: paletteColors[categories.size % paletteColors.size]
+                                val color = pickNextCategoryColor(categories)
                                 repo.addCategory(name, color)
                             }
                         }
@@ -1080,10 +1184,16 @@ private fun DebitRow(
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp
         )
-        if (debit.snippet.isNotBlank() && debit.snippet != "Manual entry") {
+        val noteText = debit.note?.trim()
+        val textToShow = if (!noteText.isNullOrBlank()) {
+            noteText
+        } else {
+            debit.snippet.takeIf { it.isNotBlank() && it != "Manual entry" }
+        }
+        if (!textToShow.isNullOrBlank()) {
             Text(
-                text = debit.snippet,
-                color = TextPrimary.copy(alpha = 0.7f),
+                text = textToShow,
+                color = if (!noteText.isNullOrBlank()) TextPrimary else TextPrimary.copy(alpha = 0.7f),
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 maxLines = 2,

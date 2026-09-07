@@ -17,14 +17,14 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
     exit 1
 fi
 
-echo "🔨 Compiling Debug APK (Incremental Build)..."
-./gradlew assembleDebug
+echo "🔨 Compiling Release APK (Incremental Build)..."
+./gradlew assembleRelease
 
-APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+APK_PATH="app/build/outputs/apk/release/app-release.apk"
 
 if [ ! -f "$APK_PATH" ]; then
     echo "❌ Error: APK not found at $APK_PATH"
     exit 1
 fi
 
-curl -F "chat_id=$TELEGRAM_CHAT_ID" -F "document=@app/build/outputs/apk/debug/app-debug.apk" -F "caption=SMS Minimal" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
+curl -F "chat_id=$TELEGRAM_CHAT_ID" -F "document=@$APK_PATH" -F "caption=SMS Minimal (Release)" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"

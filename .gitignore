@@ -28,3 +28,8 @@ keystore.properties
 .mcp.json
 
 scratch/
+backup_data/
+*.db
+*.db-wal
+*.db-shm
+app/src/main/assets/*.db

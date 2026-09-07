@@ -74,7 +74,7 @@ fun AddDebitSheet(
         )
     }
     var payee by remember(existingDebit) { mutableStateOf(existingDebit?.sender ?: "Cash") }
-    var note by remember(existingDebit) { mutableStateOf(existingDebit?.snippet ?: "") }
+    var note by remember(existingDebit) { mutableStateOf(existingDebit?.note ?: existingDebit?.snippet ?: "") }
     var selectedCategoryId by remember(existingDebit) {
         mutableStateOf(existingDebit?.categoryId)
     }
