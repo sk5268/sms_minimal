@@ -40,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -548,7 +549,7 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
     var activeMessages by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
     var starredMessages by remember { mutableStateOf<List<Pair<SmsMessage, String>>>(emptyList()) }
     var refreshCounter by remember { mutableIntStateOf(0) }
-    var activeTab by remember { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or FINANCE
+    var activeTab by rememberSaveable { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or FINANCE
 
     // Swipe to delete thread states
     // Removed legacy threadToDelete state (now handled via soft deletion)
@@ -1075,27 +1076,30 @@ fun MainThreadsScreen(
         "ARCHIVE" -> 1
         else -> 2
     }) { 3 }
+    val coroutineScope = rememberCoroutineScope()
 
-    // Sync pager state changes (from swipe) to activeTab
-    LaunchedEffect(pagerState.currentPage) {
-        val tab = when (pagerState.currentPage) {
-            0 -> "INBOX"
-            1 -> "ARCHIVE"
-            else -> "FINANCE"
-        }
-        if (tab != activeTab) {
-            onTabChange(tab)
+    // Sync pager state changes (from swipe) to activeTab only when settled
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { settledPage ->
+            val tab = when (settledPage) {
+                0 -> "INBOX"
+                1 -> "ARCHIVE"
+                else -> "FINANCE"
+            }
+            if (tab != activeTab) {
+                onTabChange(tab)
+            }
         }
     }
 
-    // Sync activeTab changes (from button clicks) to pager state
+    // Sync activeTab changes (e.g. if updated externally) to pager state safely
     LaunchedEffect(activeTab) {
         val targetPage = when (activeTab) {
             "INBOX" -> 0
             "ARCHIVE" -> 1
             else -> 2
         }
-        if (pagerState.currentPage != targetPage) {
+        if (pagerState.currentPage != targetPage && pagerState.targetPage != targetPage) {
             pagerState.animateScrollToPage(
                 page = targetPage,
                 animationSpec = tween(
@@ -1145,15 +1149,25 @@ fun MainThreadsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf("INBOX", "ARCHIVE", "FINANCE").forEach { tab ->
-                            val selected = (tab == activeTab)
+                        listOf("INBOX", "ARCHIVE", "FINANCE").forEachIndexed { index, tab ->
+                            val selected = (pagerState.targetPage == index)
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(38.dp)
                                     .clip(RoundedCornerShape(20.dp))
                                     .clickable {
-                                        onTabChange(tab)
+                                        if (pagerState.currentPage != index) {
+                                            coroutineScope.launch {
+                                                pagerState.animateScrollToPage(
+                                                    page = index,
+                                                    animationSpec = tween(
+                                                        durationMillis = 200,
+                                                        easing = FastOutSlowInEasing
+                                                    )
+                                                )
+                                            }
+                                        }
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
