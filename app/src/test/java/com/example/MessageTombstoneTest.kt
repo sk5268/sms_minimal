@@ -76,4 +76,22 @@ class MessageTombstoneTest {
         assertNull(MessageTombstone.deserialize(4211L, "2|abc|456|SENDER"))
         assertNull(MessageTombstone.deserialize(4211L, null))
     }
+
+    @Test
+    fun hidesMatchingMessage() {
+        val t = tombstone(messageId = 100L, messageDate = 1_756_730_000_000L, address = "VM-HDFCBI-S")
+        val map = mapOf(100L to t)
+        val msg = SmsMessage(id = 100L, threadId = 1L, address = "BT-HDFCBI-S", body = "Test", timestamp = 1_756_730_000_000L, read = 0, type = 1)
+        assertTrue(map.hides(msg))
+    }
+
+    @Test
+    fun doesNotHideMessageWithDifferentIdOrDate() {
+        val t = tombstone(messageId = 100L, messageDate = 1_756_730_000_000L, address = "VM-HDFCBI-S")
+        val map = mapOf(100L to t)
+        val differentId = SmsMessage(id = 101L, threadId = 1L, address = "VM-HDFCBI-S", body = "Test", timestamp = 1_756_730_000_000L, read = 0, type = 1)
+        val differentDate = SmsMessage(id = 100L, threadId = 1L, address = "VM-HDFCBI-S", body = "Test", timestamp = 1_756_735_000_000L, read = 0, type = 1)
+        assertFalse(map.hides(differentId))
+        assertFalse(map.hides(differentDate))
+    }
 }
