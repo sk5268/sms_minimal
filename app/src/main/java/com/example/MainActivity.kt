@@ -406,6 +406,7 @@ class StarManager(context: Context) {
 class MainActivity : ComponentActivity() {
     private val targetSenderState = mutableStateOf<String?>(null)
     private val targetThreadIdState = mutableLongStateOf(-1L)
+    private val targetInitialTextState = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -421,12 +422,15 @@ class MainActivity : ComponentActivity() {
                     SMSAppScreen(
                         targetSender = targetSenderState.value,
                         targetThreadId = targetThreadIdState.longValue,
+                        targetInitialText = targetInitialTextState.value,
                         onTargetSenderHandled = {
                             targetSenderState.value = null
                             targetThreadIdState.longValue = -1L
+                            targetInitialTextState.value = null
                             intent?.removeExtra(SmsReceiver.EXTRA_SENDER_NUMBER)
                             intent?.removeExtra(SmsReceiver.EXTRA_THREAD_ID)
                             intent?.removeExtra(SmsReceiver.EXTRA_MESSAGE_ID)
+                            intent?.removeExtra(Intent.EXTRA_TEXT)
                         }
                     )
                 }
@@ -441,12 +445,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyNotificationIntent(intent: Intent?) {
-        val senderFromNotif = intent?.getStringExtra(SmsReceiver.EXTRA_SENDER_NUMBER)
-        val threadFromNotif = intent?.getLongExtra(SmsReceiver.EXTRA_THREAD_ID, -1L) ?: -1L
-        targetSenderState.value = senderFromNotif
-        targetThreadIdState.longValue = threadFromNotif
-        if (!senderFromNotif.isNullOrEmpty()) {
-            SmsReceiver.dismissSenderNotification(this, senderFromNotif)
+        if (intent == null) return
+        var sender: String? = intent.getStringExtra(SmsReceiver.EXTRA_SENDER_NUMBER)
+        var threadId: Long = intent.getLongExtra(SmsReceiver.EXTRA_THREAD_ID, -1L)
+        var initialText: String? = intent.getStringExtra(Intent.EXTRA_TEXT)
+
+        // Support standard Android SMS SENDTO / SEND / VIEW intents from contacts, dialer, browser, etc.
+        val data = intent.data
+        if (data != null) {
+            val scheme = data.scheme?.lowercase()
+            if (scheme in listOf("sms", "smsto", "mms", "mmsto")) {
+                val ssp = data.schemeSpecificPart ?: ""
+                val recipient = ssp.substringBefore('?').trim()
+                if (recipient.isNotEmpty() && sender.isNullOrEmpty()) {
+                    sender = recipient
+                }
+                if (initialText.isNullOrEmpty()) {
+                    try {
+                        initialText = data.getQueryParameter("body")
+                    } catch (e: Exception) {
+                        // In case ssp wasn't URI-hierarchical
+                    }
+                }
+            }
+        }
+        if (sender.isNullOrEmpty() && (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SENDTO)) {
+            sender = intent.getStringExtra("address") ?: intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER)
+        }
+
+        targetSenderState.value = sender
+        targetThreadIdState.longValue = threadId
+        targetInitialTextState.value = initialText
+
+        if (!sender.isNullOrEmpty()) {
+            SmsReceiver.dismissSenderNotification(this, sender)
         }
     }
 }
@@ -499,7 +531,12 @@ private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
 }
 
 @Composable
-fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHandled: () -> Unit) {
+fun SMSAppScreen(
+    targetSender: String?,
+    targetThreadId: Long,
+    targetInitialText: String? = null,
+    onTargetSenderHandled: () -> Unit
+) {
     val context = LocalContext.current
     val archiveManager = remember { ArchiveManager(context) }
     val deleteManager = remember { DeleteManager(context) }
@@ -637,6 +674,11 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                 true,
                 observer
             )
+            context.contentResolver.registerContentObserver(
+                Uri.parse("content://mms-sms"),
+                true,
+                observer
+            )
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -681,10 +723,10 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
         }
     }
 
-    // Open the conversation from a notification tap. Retry briefly; never fall back to compose.
-    LaunchedEffect(permissionsGranted, targetSender, targetThreadId) {
+    // Open the conversation from a notification tap or external SENDTO/SEND intent.
+    LaunchedEffect(permissionsGranted, targetSender, targetThreadId, targetInitialText) {
         if (!permissionsGranted) return@LaunchedEffect
-        if (targetSender.isNullOrEmpty() && targetThreadId <= 0L) return@LaunchedEffect
+        if (targetSender.isNullOrEmpty() && targetThreadId <= 0L && targetInitialText.isNullOrEmpty()) return@LaunchedEffect
 
         var resolvedThreadId = targetThreadId
 
@@ -719,11 +761,21 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
         if (matched != null) {
             activeThread = matched.copy(isArchived = false)
             isNewMessageOpen = false
+            if (!targetInitialText.isNullOrBlank()) {
+                chatMessageText = targetInitialText
+            }
             onTargetSenderHandled()
             return@LaunchedEffect
         }
 
-        val address = targetSender.orEmpty()
+        val address = if (!targetSender.isNullOrBlank()) {
+            targetSender
+        } else if (resolvedThreadId > 0L) {
+            withContext(Dispatchers.IO) { lookupLatestAddressForThread(context, resolvedThreadId) }.orEmpty()
+        } else {
+            ""
+        }
+
         if (resolvedThreadId > 0L || address.isNotEmpty()) {
             val name = withContext(Dispatchers.IO) {
                 if (address.isNotEmpty()) getContactName(context, address) ?: address else "Unknown"
@@ -738,6 +790,12 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                 isArchived = false
             )
             isNewMessageOpen = false
+            if (!targetInitialText.isNullOrBlank()) {
+                chatMessageText = targetInitialText
+            }
+        } else if (!targetInitialText.isNullOrBlank()) {
+            newMessageText = targetInitialText
+            isNewMessageOpen = true
         }
         onTargetSenderHandled()
     }
@@ -760,6 +818,9 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
             }
             withContext(Dispatchers.IO) {
                 markThreadAsRead(context, currentThread.threadId, currentThread.address)
+                if (!currentThread.address.isNullOrBlank()) {
+                    SmsReceiver.dismissSenderNotification(context, currentThread.address)
+                }
             }
         }
     }
@@ -936,9 +997,14 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                         refreshCounter++
                     },
                     onSendMessage = {
-                        if (chatMessageText.trim().isNotEmpty()) {
-                            sendMessage(context, activeThread!!.address, chatMessageText)
+                        val text = chatMessageText.trim()
+                        val currentThread = activeThread
+                        if (text.isNotEmpty() && currentThread != null) {
+                            val tId = sendMessage(context, currentThread.address, text)
                             chatMessageText = ""
+                            if (currentThread.threadId <= 0L && tId > 0L) {
+                                activeThread = currentThread.copy(threadId = tId)
+                            }
                             refreshCounter++
                         }
                     },
@@ -985,14 +1051,43 @@ fun SMSAppScreen(targetSender: String?, targetThreadId: Long, onTargetSenderHand
                         newRecipients = emptyList()
                         newMessageText = ""
                     },
-                    onSend = {
-                        newRecipients.forEach { rec ->
-                            sendMessage(context, rec.number, newMessageText)
+                    onSend = { recipientsToSend, textToSend ->
+                        val trimmedText = textToSend.trim()
+                        if (recipientsToSend.isNotEmpty() && trimmedText.isNotEmpty()) {
+                            var sentThreadId = 0L
+                            recipientsToSend.forEach { rec ->
+                                val tId = sendMessage(context, rec.number, trimmedText)
+                                if (tId > 0L) sentThreadId = tId
+                            }
+                            val singleRec = recipientsToSend.singleOrNull()
+                            if (singleRec != null) {
+                                val resolvedThreadId = if (sentThreadId > 0L) {
+                                    sentThreadId
+                                } else {
+                                    try {
+                                        Telephony.Threads.getOrCreateThreadId(context, singleRec.number)
+                                    } catch (e: Exception) {
+                                        0L
+                                    }
+                                }
+                                val name = singleRec.name
+                                    ?: getContactName(context, singleRec.number)
+                                    ?: singleRec.number
+                                activeThread = SmsThread(
+                                    threadId = resolvedThreadId,
+                                    address = singleRec.number,
+                                    name = name,
+                                    snippet = trimmedText,
+                                    timestamp = System.currentTimeMillis(),
+                                    unreadCount = 0,
+                                    isArchived = false
+                                )
+                            }
+                            newRecipients = emptyList()
+                            newMessageText = ""
+                            isNewMessageOpen = false
+                            refreshCounter++
                         }
-                        newRecipients = emptyList()
-                        newMessageText = ""
-                        isNewMessageOpen = false
-                        refreshCounter++
                     }
                 )
             } else if (isDeletedFolderOpen) {
@@ -2576,7 +2671,7 @@ fun NewMessageScreen(
     messageText: String,
     onMessageTextChange: (String) -> Unit,
     onBack: () -> Unit,
-    onSend: () -> Unit
+    onSend: (List<ContactRecipient>, String) -> Unit
 ) {
     val context = LocalContext.current
     var typedInput by remember { mutableStateOf("") }
@@ -2660,7 +2755,7 @@ fun NewMessageScreen(
         } else if (messageText.trim().isEmpty()) {
             Toast.makeText(context, "Compose a message body first", Toast.LENGTH_SHORT).show()
         } else {
-            onSend()
+            onSend(currentRecipients, messageText.trim())
         }
     }
 
@@ -3122,7 +3217,7 @@ private fun requestDefaultSmsIntent(activity: Activity): Intent? {
     }
 }
 
-private fun sendMessage(context: Context, number: String, body: String) {
+private fun sendMessage(context: Context, number: String, body: String): Long {
     try {
         val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             context.getSystemService(SmsManager::class.java)
@@ -3131,25 +3226,46 @@ private fun sendMessage(context: Context, number: String, body: String) {
             SmsManager.getDefault()
         }
 
-        // Write to system Outbox first to get the URI
+        val threadId = try {
+            Telephony.Threads.getOrCreateThreadId(context, number)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            0L
+        }
+
+        // Insert directly into Sent content provider as MESSAGE_TYPE_SENT.
+        // This triggers the telephony provider's update_threads_on_insert_sms trigger,
+        // which immediately registers the thread, sets its date, snippet, and increments message_count.
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, number)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
             put(Telephony.Sms.READ, 1)
-            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_OUTBOX)
-            try {
-                val threadId = Telephony.Threads.getOrCreateThreadId(context, number)
-                if (threadId > 0) {
-                    put(Telephony.Sms.THREAD_ID, threadId)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+            if (threadId > 0) {
+                put(Telephony.Sms.THREAD_ID, threadId)
             }
         }
-        val uri = context.contentResolver.insert(Telephony.Sms.Outbox.CONTENT_URI, values)
+        val uri = try {
+            context.contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try {
+                context.contentResolver.insert(Uri.parse("content://sms"), values)
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+                null
+            }
+        }
 
-        // Create PendingIntent for sent status
+        try {
+            context.contentResolver.notifyChange(Uri.parse("content://sms"), null)
+            context.contentResolver.notifyChange(Uri.parse("content://mms-sms/conversations"), null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // Create PendingIntent for sent status (handles failures)
         val sentIntent = Intent(context, SmsSentReceiver::class.java).apply {
             action = SmsSentReceiver.ACTION_SMS_SENT
             putExtra(SmsSentReceiver.EXTRA_MESSAGE_URI, uri?.toString() ?: "")
@@ -3179,9 +3295,31 @@ private fun sendMessage(context: Context, number: String, body: String) {
             } as ArrayList<PendingIntent>
             smsManager.sendMultipartTextMessage(number, null, parts, sentIntents, null)
         }
+        var resolvedThreadId = threadId
+        if (resolvedThreadId <= 0L && uri != null) {
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(Telephony.Sms.THREAD_ID),
+                    null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(Telephony.Sms.THREAD_ID)
+                        if (idx != -1) {
+                            val idFromCursor = cursor.getLong(idx)
+                            if (idFromCursor > 0L) resolvedThreadId = idFromCursor
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return resolvedThreadId
     } catch (e: Exception) {
         Toast.makeText(context, "Send failed: ${e.message}", Toast.LENGTH_SHORT).show()
         e.printStackTrace()
+        return 0L
     }
 }
 
@@ -3355,6 +3493,17 @@ private fun queryThreadsFromConversations(
                         }
                         date = activeMsg.timestamp
                         snippet = activeMsg.body
+                    }
+                }
+
+                if (date <= 0L || snippet.isBlank()) {
+                    val activeMsg = findLatestActiveMessageInThread(context, threadId, address, deletedMessages)
+                    if (activeMsg != null) {
+                        if (date <= 0L) date = activeMsg.timestamp
+                        if (snippet.isBlank()) snippet = activeMsg.body
+                    } else if (date <= 0L) {
+                        // Empty thread without messages in SMS database; do not show empty placeholder
+                        continue
                     }
                 }
 

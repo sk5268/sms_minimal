@@ -38,6 +38,12 @@ class HeadlessSmsSendService : Service() {
                         smsManager.sendMultipartTextMessage(number, null, parts, null, null)
                     }
 
+                    val threadId = try {
+                        Telephony.Threads.getOrCreateThreadId(this, number)
+                    } catch (e: Exception) {
+                        0L
+                    }
+
                     // Write to Sent content provider
                     val values = ContentValues().apply {
                         put(Telephony.Sms.ADDRESS, number)
@@ -45,8 +51,17 @@ class HeadlessSmsSendService : Service() {
                         put(Telephony.Sms.DATE, System.currentTimeMillis())
                         put(Telephony.Sms.READ, 1)
                         put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+                        if (threadId > 0L) {
+                            put(Telephony.Sms.THREAD_ID, threadId)
+                        }
                     }
                     contentResolver.insert(Telephony.Sms.Sent.CONTENT_URI, values)
+                    try {
+                        contentResolver.notifyChange(Uri.parse("content://sms"), null)
+                        contentResolver.notifyChange(Uri.parse("content://mms-sms/conversations"), null)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }

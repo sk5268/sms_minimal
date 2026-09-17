@@ -120,6 +120,13 @@ class SmsReceiver : BroadcastReceiver() {
             restoreIncomingConversation(context, threadId)
         }
 
+        // Check for duplicate message delivery (e.g. cellular network retry or duplicate broadcast)
+        val existingUri = findDuplicateInboxMessageUri(context, sender, body, timestamp)
+        if (existingUri != null) {
+            // Already processed; avoid inserting duplicate DB row and duplicate notifications
+            return
+        }
+
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, sender)
             put(Telephony.Sms.BODY, body)
@@ -140,6 +147,34 @@ class SmsReceiver : BroadcastReceiver() {
         if (insertedUri == null) {
             try {
                 insertedUri = context.contentResolver.insert(Uri.parse("content://sms"), values)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        // Explicitly notify content observers on content://sms and content://mms-sms
+        try {
+            context.contentResolver.notifyChange(Uri.parse("content://sms"), null)
+            context.contentResolver.notifyChange(Uri.parse("content://mms-sms/conversations"), null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        if (threadId <= 0L && insertedUri != null) {
+            try {
+                context.contentResolver.query(
+                    insertedUri,
+                    arrayOf(Telephony.Sms.THREAD_ID),
+                    null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(Telephony.Sms.THREAD_ID)
+                        if (idx != -1) {
+                            val resolved = cursor.getLong(idx)
+                            if (resolved > 0L) threadId = resolved
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -190,6 +225,41 @@ class SmsReceiver : BroadcastReceiver() {
             debitSnippet = parsedDebit?.snippet,
             debitOccurredAt = timestamp
         )
+    }
+
+    private fun findDuplicateInboxMessageUri(
+        context: Context,
+        sender: String,
+        body: String,
+        timestamp: Long
+    ): Uri? {
+        try {
+            val projection = arrayOf(Telephony.Sms._ID, Telephony.Sms.DATE)
+            val selection = "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.ADDRESS} = ? AND ${Telephony.Sms.BODY} = ?"
+            val selectionArgs = arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), sender, body)
+            context.contentResolver.query(
+                Telephony.Sms.Inbox.CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                "${Telephony.Sms.DATE} DESC"
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(Telephony.Sms._ID)
+                val dateIndex = cursor.getColumnIndex(Telephony.Sms.DATE)
+                if (idIndex != -1 && dateIndex != -1) {
+                    while (cursor.moveToNext()) {
+                        val msgDate = cursor.getLong(dateIndex)
+                        if (Math.abs(msgDate - timestamp) <= 3000L) {
+                            val id = cursor.getLong(idIndex)
+                            return ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
     }
 
     private fun scheduleOtpAutoDelete(context: Context, messageId: Long, messageDate: Long, sender: String) {

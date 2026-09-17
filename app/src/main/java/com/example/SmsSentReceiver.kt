@@ -28,29 +28,21 @@ class SmsSentReceiver : BroadcastReceiver() {
         val recipient = intent.getStringExtra(EXTRA_RECIPIENT) ?: "Unknown"
         val uri = Uri.parse(uriString)
 
-        if (resultCode == Activity.RESULT_OK) {
-            // Message sent successfully. Move from OUTBOX to SENT.
-            val values = ContentValues().apply {
-                put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
-            }
-            try {
-                context.contentResolver.update(uri, values, null, null)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        } else {
-            // Message failed to send. Move from OUTBOX to FAILED.
+        if (resultCode != Activity.RESULT_OK) {
+            // Radio/network transmission failed. Mark message as FAILED.
             val values = ContentValues().apply {
                 put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_FAILED)
             }
             try {
                 context.contentResolver.update(uri, values, null, null)
+                context.contentResolver.notifyChange(Uri.parse("content://sms"), null)
+                context.contentResolver.notifyChange(Uri.parse("content://mms-sms/conversations"), null)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
 
             // Show a toast and notification to the user
-            Toast.makeText(context, "Failed to send SMS to ${recipient}", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Failed to send SMS to $recipient", Toast.LENGTH_LONG).show()
             showFailureNotification(context, recipient)
         }
     }
