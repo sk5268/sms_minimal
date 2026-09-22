@@ -45,6 +45,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("OTP", otp)
                     clipboard.setPrimaryClip(clip)
+                    deleteSmsFromNotification(appContext, intent)
                     Toast.makeText(appContext, "OTP Copied", Toast.LENGTH_SHORT).show()
                 }
                 dismissSenderNotification(appContext, intent.getStringExtra(EXTRA_SENDER), notifId)

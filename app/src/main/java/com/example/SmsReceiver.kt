@@ -412,6 +412,7 @@ class SmsReceiver : BroadcastReceiver() {
             val copyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_COPY_OTP
                 putExtra(NotificationActionReceiver.EXTRA_OTP, otp)
+                putExtra(NotificationActionReceiver.EXTRA_SMS_MESSAGE_ID, messageId ?: -1L)
                 putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
                 putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
             }
