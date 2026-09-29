@@ -10,6 +10,13 @@ import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.UUID
 
+data class MonthTotalPoint(
+    val year: Int,
+    val month: Int, // 0-indexed
+    val monthLabel: String,
+    val totalPaise: Long
+)
+
 data class FinanceStats(
     val monthTotalPaise: Long,
     val dailyAveragePaise: Long,
@@ -192,6 +199,41 @@ class FinanceRepository(context: Context) {
         val uncategorizedId = dao.getCategoryByName("Uncategorized")?.id ?: return
         dao.reassignDebits(categoryId, uncategorizedId)
         dao.deleteCategory(categoryId)
+    }
+
+    suspend fun getMoMHistory(
+        monthsCount: Int,
+        targetYear: Int,
+        targetMonthZeroIndexed: Int,
+        categoryId: Long? = null
+    ): List<MonthTotalPoint> = withContext(Dispatchers.IO) {
+        ensureSeeded()
+        val list = mutableListOf<MonthTotalPoint>()
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, targetYear)
+            set(Calendar.MONTH, targetMonthZeroIndexed)
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+        // Generate N months going backwards, then reverse to chronological order
+        for (i in 0 until monthsCount) {
+            val yr = cal.get(Calendar.YEAR)
+            val mo = cal.get(Calendar.MONTH)
+            val (startMs, endMs) = getMonthBounds(yr, mo)
+            val total = if (categoryId != null && categoryId > 0L) {
+                dao.categorySumBetween(categoryId, startMs, endMs)
+            } else {
+                dao.sumBetween(startMs, endMs)
+            }
+            val label = java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.US).format(cal.time)
+            list.add(MonthTotalPoint(yr, mo, label, total))
+            cal.add(Calendar.MONTH, -1)
+        }
+        list.reversed()
     }
 
     suspend fun getStats(targetYear: Int, targetMonthZeroIndexed: Int): FinanceStats = withContext(Dispatchers.IO) {
