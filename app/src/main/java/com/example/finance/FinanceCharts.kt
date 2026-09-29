@@ -583,3 +583,363 @@ fun CategoryDonutChart(
     }
 }
 
+@Composable
+fun MoMChart(
+    history: List<MonthTotalPoint>,
+    selectedMonthsCount: Int,
+    onMonthsCountSelected: (Int) -> Unit,
+    title: String,
+    subtitle: String? = null,
+    chartColor: Color = AccentBlue,
+    modifier: Modifier = Modifier
+) {
+    var isBarChart by remember { mutableStateOf(true) }
+    var tappedPointIndex by remember { mutableStateOf<Int?>(null) }
+
+    val monthOptions = listOf(1, 2, 3, 6, 9, 12)
+
+    var progress by remember { mutableFloatStateOf(0f) }
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(700, easing = FastOutSlowInEasing),
+        label = "mom_chart"
+    )
+
+    LaunchedEffect(history, isBarChart) {
+        progress = 0f
+        progress = 1f
+        tappedPointIndex = null
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Top Header and View Mode Toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = TextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        color = TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            // Bar / Line Mode Switch
+            Row(
+                modifier = Modifier
+                    .background(DarkSurfaceElevated, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .androidx.compose.foundation.border(1.dp, com.example.ui.theme.BorderColor, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .padding(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .background(
+                            if (isBarChart) chartColor.copy(alpha = 0.25f) else Color.Transparent,
+                            androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                        )
+                        .clickable { isBarChart = true }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Bar",
+                        color = if (isBarChart) chartColor else TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = if (isBarChart) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .background(
+                            if (!isBarChart) chartColor.copy(alpha = 0.25f) else Color.Transparent,
+                            androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                        )
+                        .clickable { isBarChart = false }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Line",
+                        color = if (!isBarChart) chartColor else TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = if (!isBarChart) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+
+        // Time Range Chips (1M, 2M, 3M, 6M, 9M, 12M)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            monthOptions.forEach { count ->
+                val isSelected = selectedMonthsCount == count
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) chartColor.copy(alpha = 0.22f) else DarkSurfaceElevated,
+                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                        )
+                        .androidx.compose.foundation.border(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) chartColor else com.example.ui.theme.BorderColor,
+                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onMonthsCountSelected(count) }
+                        .padding(vertical = 5.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${count}M",
+                        color = if (isSelected) chartColor else TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+
+        // Canvas Chart Display
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(160.dp)
+                .pointerInput(history) {
+                    detectTapGestures { offset ->
+                        if (history.isEmpty()) return@detectTapGestures
+                        val padLeft = 52f
+                        val padRight = 12f
+                        val chartW = size.width - padLeft - padRight
+                        val count = history.size
+                        val stepX = if (count <= 1) chartW else chartW / (count - 1)
+
+                        val relativeX = offset.x - padLeft
+                        if (relativeX in -stepX / 2f..chartW + stepX / 2f) {
+                            val idx = if (count <= 1) 0 else ((relativeX + stepX / 2f) / stepX).toInt().coerceIn(0, count - 1)
+                            tappedPointIndex = if (tappedPointIndex == idx) null else idx
+                        }
+                    }
+                }
+        ) {
+            if (history.isEmpty()) return@Canvas
+
+            val padLeft = 52f
+            val padRight = 12f
+            val padTop = 16f
+            val padBottom = 28f
+            val chartW = size.width - padLeft - padRight
+            val chartH = size.height - padTop - padBottom
+
+            val gridColor = TextSecondary.copy(alpha = 0.10f)
+            val labelPaint = Paint().apply {
+                color = TextSecondary.copy(alpha = 0.85f).toArgb()
+                textSize = 26f
+                typeface = Typeface.MONOSPACE
+                isAntiAlias = true
+            }
+            val valuePaint = Paint().apply {
+                color = TextPrimary.toArgb()
+                textSize = 24f
+                typeface = Typeface.MONOSPACE
+                isAntiAlias = true
+                textAlign = Paint.Align.CENTER
+            }
+
+            val maxAmount = history.maxOf { it.totalPaise }.coerceAtLeast(1).toFloat()
+
+            // Horizontal Grid Lines
+            for (i in 0..3) {
+                val gy = padTop + chartH * i / 3f
+                drawLine(gridColor, Offset(padLeft, gy), Offset(size.width - padRight, gy), 1f)
+            }
+
+            // Y-axis labels
+            val yLabels = listOf(maxAmount, maxAmount / 2f, 0f)
+            yLabels.forEachIndexed { index, value ->
+                val gy = padTop + chartH * index / 2f
+                val label = formatRupees(value.toLong())
+                drawContext.canvas.nativeCanvas.drawText(
+                    label,
+                    4f,
+                    gy + 7f,
+                    labelPaint
+                )
+            }
+
+            val count = history.size
+            val stepX = if (count <= 1) chartW else chartW / (count - 1)
+
+            fun pointX(index: Int): Float {
+                return if (count <= 1) padLeft + chartW / 2f else padLeft + index * stepX
+            }
+
+            fun amountY(amount: Long): Float {
+                return padTop + chartH - (amount / maxAmount) * chartH * 0.88f
+            }
+
+            if (isBarChart) {
+                val barWidth = (chartW / count * 0.45f).coerceIn(12f, 36f)
+
+                history.forEachIndexed { index, point ->
+                    val cx = pointX(index)
+                    val targetY = amountY(point.totalPaise)
+                    val barHeight = (padTop + chartH - targetY) * animatedProgress
+                    val currentY = padTop + chartH - barHeight
+
+                    val isLast = index == history.lastIndex
+                    val isTapped = tappedPointIndex == index
+                    val barAlpha = if (isLast || isTapped) 1.0f else 0.65f
+                    val curColor = if (isLast) chartColor else chartColor.copy(alpha = 0.75f)
+
+                    // Draw Bar
+                    val left = cx - barWidth / 2f
+                    val top = currentY
+                    val right = cx + barWidth / 2f
+                    val bottom = padTop + chartH
+
+                    drawRoundRect(
+                        color = curColor.copy(alpha = barAlpha),
+                        topLeft = Offset(left, top),
+                        size = Size(right - left, (bottom - top).coerceAtLeast(2f)),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f)
+                    )
+
+                    // Draw x-axis month label
+                    drawContext.canvas.nativeCanvas.drawText(
+                        point.label,
+                        cx,
+                        size.height - 6f,
+                        Paint().apply {
+                            color = TextSecondary.copy(alpha = 0.9f).toArgb()
+                            textSize = 26f
+                            typeface = Typeface.MONOSPACE
+                            isAntiAlias = true
+                            textAlign = Paint.Align.CENTER
+                        }
+                    )
+
+                    // Show value above bar if tapped or if count <= 6
+                    if (isTapped || count <= 6) {
+                        drawContext.canvas.nativeCanvas.drawText(
+                            formatRupees(point.totalPaise),
+                            cx,
+                            top - 6f,
+                            valuePaint
+                        )
+                    }
+                }
+            } else {
+                // Line Chart
+                val points = history.mapIndexed { index, point ->
+                    Offset(pointX(index), amountY(point.totalPaise))
+                }
+
+                if (points.size == 1) {
+                    val p = points.first()
+                    drawCircle(chartColor.copy(alpha = 0.3f), radius = 8f, center = p)
+                    drawCircle(chartColor, radius = 5f, center = p)
+                } else {
+                    val clipW = padLeft + chartW * animatedProgress
+                    drawContext.canvas.save()
+                    drawContext.canvas.clipRect(0f, 0f, clipW, size.height)
+
+                    // Gradient area fill
+                    val areaPath = Path().apply {
+                        moveTo(points.first().x, padTop + chartH)
+                        points.forEach { lineTo(it.x, it.y) }
+                        lineTo(points.last().x, padTop + chartH)
+                        close()
+                    }
+                    drawPath(
+                        path = areaPath,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(chartColor.copy(alpha = 0.30f), chartColor.copy(alpha = 0.02f)),
+                            startY = padTop,
+                            endY = padTop + chartH
+                        )
+                    )
+
+                    // Stroke line
+                    val linePath = Path().apply {
+                        points.forEachIndexed { i, p ->
+                            if (i == 0) moveTo(p.x, p.y) else lineTo(p.x, p.y)
+                        }
+                    }
+                    drawPath(
+                        path = linePath,
+                        color = chartColor.copy(alpha = 0.2f),
+                        style = Stroke(width = 8f, cap = StrokeCap.Round)
+                    )
+                    drawPath(
+                        path = linePath,
+                        color = chartColor,
+                        style = Stroke(width = 2.8f, cap = StrokeCap.Round)
+                    )
+
+                    // Data points
+                    points.forEachIndexed { index, p ->
+                        val isTapped = tappedPointIndex == index
+                        val radius = if (isTapped) 7f else 4.5f
+                        drawCircle(chartColor.copy(alpha = 0.35f), radius = radius + 3f, center = p)
+                        drawCircle(chartColor, radius = radius, center = p)
+                    }
+
+                    drawContext.canvas.restore()
+                }
+
+                // Month labels and values
+                history.forEachIndexed { index, point ->
+                    val cx = pointX(index)
+                    val p = points[index]
+                    val isTapped = tappedPointIndex == index
+
+                    drawContext.canvas.nativeCanvas.drawText(
+                        point.label,
+                        cx,
+                        size.height - 6f,
+                        Paint().apply {
+                            color = TextSecondary.copy(alpha = 0.9f).toArgb()
+                            textSize = 26f
+                            typeface = Typeface.MONOSPACE
+                            isAntiAlias = true
+                            textAlign = Paint.Align.CENTER
+                        }
+                    )
+
+                    if (isTapped || count <= 6) {
+                        drawContext.canvas.nativeCanvas.drawText(
+                            formatRupees(point.totalPaise),
+                            cx,
+                            p.y - 10f,
+                            valuePaint
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

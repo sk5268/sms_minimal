@@ -134,6 +134,9 @@ fun FinanceScreen() {
     var newCategoryName by remember { mutableStateOf("") }
     var isRecentDebitsExpanded by remember { mutableStateOf(false) }
     var selectedCategoryId by remember { mutableStateOf<Long?>(null) }
+    var isCategoryBreakdownExpanded by remember { mutableStateOf(false) }
+    var momMonthsCount by remember { mutableStateOf(6) }
+    var momHistory by remember { mutableStateOf<List<MonthTotalPoint>>(emptyList()) }
 
     val categoryMap = categories.associateBy { it.id }
 
@@ -201,6 +204,18 @@ fun FinanceScreen() {
         prevMonthStats = prev
     }
 
+    LaunchedEffect(debits, selectedYear, selectedMonth, momMonthsCount, selectedCategoryId) {
+        val history = withContext(Dispatchers.IO) {
+            repo.getMoMHistory(
+                monthsCount = momMonthsCount,
+                targetYear = selectedYear,
+                targetMonthZeroIndexed = selectedMonth,
+                categoryId = selectedCategoryId
+            )
+        }
+        momHistory = history
+    }
+
     val monthDebits = remember(debits, monthStartMs, monthEndMs) {
         debits.filter { it.occurredAt >= monthStartMs && it.occurredAt < monthEndMs }
     }
@@ -230,9 +245,10 @@ fun FinanceScreen() {
                     val name = categoryMap[categoryId]?.name ?: "Uncategorized"
                     Triple(categoryId, name, list.sumOf { it.amountPaise })
                 }
+                .filter { it.third > 0 }
         } else emptyList()
 
-        source.sortedByDescending { it.third }.take(6)
+        source.sortedByDescending { it.third }
     }
 
     val monthDayStarts = remember(monthStartMs, monthEndMs) {
@@ -325,6 +341,31 @@ fun FinanceScreen() {
 
             item {
                 FinanceCard {
+                    val momTitle = if (selectedCategory != null) {
+                        "${selectedCategory.name} · MoM Trend"
+                    } else {
+                        "Overall Spending · MoM Trend"
+                    }
+                    val momSubtitle = if (selectedCategory != null) {
+                        "Monthly spending history for ${selectedCategory.name}"
+                    } else {
+                        "Month-over-month total spending trend"
+                    }
+                    val chartColor = selectedCategoryColor ?: AccentBlue
+
+                    MoMChart(
+                        history = momHistory,
+                        selectedMonthsCount = momMonthsCount,
+                        onMonthsCountSelected = { momMonthsCount = it },
+                        title = momTitle,
+                        subtitle = momSubtitle,
+                        chartColor = chartColor
+                    )
+                }
+            }
+
+            item {
+                FinanceCard {
                     Text(
                         text = monthName,
                         color = TextSecondary,
@@ -410,13 +451,15 @@ fun FinanceScreen() {
                             .padding(vertical = 8.dp)
                     )
 
+                    val visibleTotals = if (isCategoryBreakdownExpanded || totals.size <= 5) totals else totals.take(5)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        totals.forEachIndexed { index, (catId, name, amount) ->
+                        visibleTotals.forEach { (catId, name, amount) ->
+                            val index = totals.indexOfFirst { it.first == catId }
                             val pct = if (monthTotal > 0) (amount * 100 / monthTotal).toInt() else 0
                             val isSelected = selectedCategoryId == catId
                             val isAnySelected = selectedCategoryId != null
                             val rowAlpha = if (isAnySelected && !isSelected) 0.40f else 1.0f
-                            val catColor = barColors[index]
+                            val catColor = if (index >= 0 && index < barColors.size) barColors[index] else AccentBlue
 
                             Row(
                                 modifier = Modifier
@@ -464,6 +507,25 @@ fun FinanceScreen() {
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 13.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        if (totals.size > 5) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isCategoryBreakdownExpanded = !isCategoryBreakdownExpanded }
+                                    .padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (isCategoryBreakdownExpanded) "Show top 5 categories ▲" else "Show all ${totals.size} categories (${totals.size - 5} more) ▼",
+                                    color = AccentBlue,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }

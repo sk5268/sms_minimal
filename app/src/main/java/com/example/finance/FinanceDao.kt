@@ -91,6 +91,9 @@ interface FinanceDao {
     @Query("SELECT COALESCE(SUM(amountPaise), 0) FROM debits WHERE occurredAt >= :start AND occurredAt < :end")
     suspend fun sumBetween(start: Long, end: Long): Long
 
+    @Query("SELECT COALESCE(SUM(amountPaise), 0) FROM debits WHERE categoryId = :categoryId AND occurredAt >= :start AND occurredAt < :end")
+    suspend fun categorySumBetween(categoryId: Long, start: Long, end: Long): Long
+
     @Query("SELECT COALESCE(SUM(amountPaise), 0) FROM debits")
     suspend fun sumAll(): Long
 
