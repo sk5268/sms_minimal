@@ -51,6 +51,23 @@ class DebitNoteAndCategoryTest {
     }
 
     @Test
+    fun categorySortingUncategorizedFirstThenAlphabetical() {
+        val categories = listOf(
+            CategoryEntity(id = 1, name = "Shopping", colorArgb = 0, sortOrder = 0),
+            CategoryEntity(id = 2, name = "Uncategorized", colorArgb = 0, sortOrder = 1),
+            CategoryEntity(id = 3, name = "Bills", colorArgb = 0, sortOrder = 2),
+            CategoryEntity(id = 4, name = "automobile", colorArgb = 0, sortOrder = 3)
+        )
+
+        val sorted = categories.sortedWith(
+            compareBy<CategoryEntity> { if (it.name.equals("Uncategorized", ignoreCase = true)) 0 else 1 }
+                .thenBy { it.name.lowercase() }
+        )
+
+        assertEquals(listOf("Uncategorized", "automobile", "Bills", "Shopping"), sorted.map { it.name })
+    }
+
+    @Test
     fun debitEntityFallsBackToSnippetWhenNoteIsNull() {
         val legacyDebit = DebitEntity(
             id = 11,

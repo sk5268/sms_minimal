@@ -767,6 +767,9 @@ fun FinanceScreen() {
                 }
                 showAddDebit = false
                 Toast.makeText(context, "Debit added", Toast.LENGTH_SHORT).show()
+            },
+            onAddCategory = { name, color ->
+                repo.addCategory(name, color)
             }
         )
     }
@@ -798,6 +801,9 @@ fun FinanceScreen() {
                 scope.launch(Dispatchers.IO) { repo.deleteManualDebit(debit.id) }
                 editManualDebit = null
                 Toast.makeText(context, "Debit deleted", Toast.LENGTH_SHORT).show()
+            },
+            onAddCategory = { name, color ->
+                repo.addCategory(name, color)
             }
         )
     }

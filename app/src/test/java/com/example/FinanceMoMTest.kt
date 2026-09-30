@@ -12,14 +12,14 @@ class FinanceMoMTest {
     fun monthTotalPointDataStructure() {
         val point = MonthTotalPoint(
             year = 2025,
-            monthZeroIndexed = 2,
-            label = "Mar",
+            month = 2,
+            monthLabel = "Mar",
             totalPaise = 150000L
         )
 
         assertEquals(2025, point.year)
-        assertEquals(2, point.monthZeroIndexed)
-        assertEquals("Mar", point.label)
+        assertEquals(2, point.month)
+        assertEquals("Mar", point.monthLabel)
         assertEquals(150000L, point.totalPaise)
     }
 

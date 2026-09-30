@@ -6,19 +6,25 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,9 +47,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.formatRupees
 import com.example.ui.theme.AccentBlue
+import com.example.ui.theme.BorderColor
 import com.example.ui.theme.DarkSurfaceElevated
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import androidx.compose.ui.geometry.CornerRadius
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -646,8 +654,8 @@ fun MoMChart(
             // Bar / Line Mode Switch
             Row(
                 modifier = Modifier
-                    .background(DarkSurfaceElevated, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                    .androidx.compose.foundation.border(1.dp, com.example.ui.theme.BorderColor, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .background(DarkSurfaceElevated, RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
                     .padding(2.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
@@ -655,7 +663,7 @@ fun MoMChart(
                     modifier = Modifier
                         .background(
                             if (isBarChart) chartColor.copy(alpha = 0.25f) else Color.Transparent,
-                            androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                            RoundedCornerShape(6.dp)
                         )
                         .clickable { isBarChart = true }
                         .padding(horizontal = 8.dp, vertical = 4.dp)
@@ -672,7 +680,7 @@ fun MoMChart(
                     modifier = Modifier
                         .background(
                             if (!isBarChart) chartColor.copy(alpha = 0.25f) else Color.Transparent,
-                            androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                            RoundedCornerShape(6.dp)
                         )
                         .clickable { isBarChart = false }
                         .padding(horizontal = 8.dp, vertical = 4.dp)
@@ -701,12 +709,12 @@ fun MoMChart(
                         .weight(1f)
                         .background(
                             if (isSelected) chartColor.copy(alpha = 0.22f) else DarkSurfaceElevated,
-                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                            RoundedCornerShape(8.dp)
                         )
-                        .androidx.compose.foundation.border(
+                        .border(
                             if (isSelected) 1.5.dp else 1.dp,
-                            if (isSelected) chartColor else com.example.ui.theme.BorderColor,
-                            androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                            if (isSelected) chartColor else BorderColor,
+                            RoundedCornerShape(8.dp)
                         )
                         .clickable { onMonthsCountSelected(count) }
                         .padding(vertical = 5.dp),
@@ -825,12 +833,12 @@ fun MoMChart(
                         color = curColor.copy(alpha = barAlpha),
                         topLeft = Offset(left, top),
                         size = Size(right - left, (bottom - top).coerceAtLeast(2f)),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f)
+                        cornerRadius = CornerRadius(6f, 6f)
                     )
 
                     // Draw x-axis month label
                     drawContext.canvas.nativeCanvas.drawText(
-                        point.label,
+                        point.monthLabel,
                         cx,
                         size.height - 6f,
                         Paint().apply {
@@ -918,7 +926,7 @@ fun MoMChart(
                     val isTapped = tappedPointIndex == index
 
                     drawContext.canvas.nativeCanvas.drawText(
-                        point.label,
+                        point.monthLabel,
                         cx,
                         size.height - 6f,
                         Paint().apply {

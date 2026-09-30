@@ -19,10 +19,10 @@ data class DailyTotal(
 
 @Dao
 interface FinanceDao {
-    @Query("SELECT * FROM categories ORDER BY sortOrder ASC, name ASC")
+    @Query("SELECT * FROM categories ORDER BY CASE WHEN LOWER(name) = 'uncategorized' THEN 0 ELSE 1 END ASC, LOWER(name) ASC")
     fun observeCategories(): Flow<List<CategoryEntity>>
 
-    @Query("SELECT * FROM categories ORDER BY sortOrder ASC, name ASC")
+    @Query("SELECT * FROM categories ORDER BY CASE WHEN LOWER(name) = 'uncategorized' THEN 0 ELSE 1 END ASC, LOWER(name) ASC")
     suspend fun getCategories(): List<CategoryEntity>
 
     @Query("SELECT * FROM categories WHERE id = :id LIMIT 1")
