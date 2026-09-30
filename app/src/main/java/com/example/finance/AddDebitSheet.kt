@@ -1,5 +1,6 @@
 package com.example.finance
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,23 +14,29 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,8 +46,10 @@ import com.example.ui.theme.AccentBlue
 import com.example.ui.theme.AccentGreen
 import com.example.ui.theme.AccentRed
 import com.example.ui.theme.DarkSurface
+import com.example.ui.theme.PureWhite
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -61,7 +70,8 @@ fun AddDebitSheet(
     existingDebit: DebitEntity? = null,
     onDismiss: () -> Unit,
     onSave: (ManualDebitForm) -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    onAddCategory: (suspend (name: String, colorArgb: Int) -> Long)? = null
 ) {
     val isEdit = existingDebit != null
     var amountText by remember(existingDebit) {
@@ -82,6 +92,11 @@ fun AddDebitSheet(
         mutableLongStateOf(existingDebit?.occurredAt ?: System.currentTimeMillis())
     }
     var amountError by remember { mutableStateOf<String?>(null) }
+
+    var isAddingCategory by remember { mutableStateOf(false) }
+    var newCategoryName by remember { mutableStateOf("") }
+    var selectedColorArgb by remember { mutableIntStateOf(0) }
+    val coroutineScope = rememberCoroutineScope()
 
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy", Locale.US) }
 
@@ -217,6 +232,151 @@ fun AddDebitSheet(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp
                             )
+                        }
+                    }
+
+                    if (onAddCategory != null) {
+                        val isNewCatOpen = isAddingCategory
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (isNewCatOpen) AccentGreen.copy(alpha = 0.25f) else Color(0xFF1E2230),
+                                    RoundedCornerShape(14.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isNewCatOpen) AccentGreen else AccentGreen.copy(alpha = 0.5f),
+                                    RoundedCornerShape(14.dp)
+                                )
+                                .clickable {
+                                    isAddingCategory = !isAddingCategory
+                                    if (isAddingCategory) {
+                                        newCategoryName = ""
+                                        selectedColorArgb = pickNextCategoryColor(categories)
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (isNewCatOpen) "✕ Cancel" else "+ New",
+                                color = AccentGreen,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                if (isAddingCategory && onAddCategory != null) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        color = Color(0xFF1B1E2B),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Color(0xFF2E3346))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "ADD NEW CATEGORY",
+                                color = AccentGreen,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+
+                            OutlinedTextField(
+                                value = newCategoryName,
+                                onValueChange = { newCategoryName = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = {
+                                    Text(
+                                        "Category name (e.g. Shopping)",
+                                        color = TextSecondary.copy(alpha = 0.5f),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 12.sp
+                                    )
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary,
+                                    cursorColor = AccentGreen,
+                                    focusedBorderColor = AccentGreen,
+                                    unfocusedBorderColor = Color(0xFF2E3346),
+                                    focusedContainerColor = Color(0xFF10121A),
+                                    unfocusedContainerColor = Color(0xFF10121A)
+                                )
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CategoryChartPalette.take(6).forEach { color ->
+                                        val isColorSelected = color.toArgb() == selectedColorArgb
+                                        Box(
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .background(color, CircleShape)
+                                                .border(
+                                                    if (isColorSelected) 2.dp else 0.dp,
+                                                    PureWhite,
+                                                    CircleShape
+                                                )
+                                                .clickable {
+                                                    selectedColorArgb = color.toArgb()
+                                                }
+                                        )
+                                    }
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "Cancel",
+                                        color = TextSecondary,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        modifier = Modifier
+                                            .clickable { isAddingCategory = false }
+                                            .padding(vertical = 4.dp, horizontal = 4.dp)
+                                    )
+                                    Text(
+                                        text = "Add & Select",
+                                        color = AccentGreen,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        modifier = Modifier
+                                            .background(AccentGreen.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                                            .border(1.dp, AccentGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                val name = newCategoryName.trim()
+                                                if (name.isNotBlank()) {
+                                                    coroutineScope.launch {
+                                                        val color = if (selectedColorArgb != 0) selectedColorArgb else pickNextCategoryColor(categories)
+                                                        val newId = onAddCategory(name, color)
+                                                        selectedCategoryId = newId
+                                                        isAddingCategory = false
+                                                        newCategoryName = ""
+                                                    }
+                                                }
+                                            }
+                                            .padding(vertical = 4.dp, horizontal = 10.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
