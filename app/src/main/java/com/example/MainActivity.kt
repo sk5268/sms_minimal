@@ -582,6 +582,7 @@ fun SMSAppScreen(
     var isNewMessageOpen by remember { mutableStateOf(false) }
     var isDeletedFolderOpen by remember { mutableStateOf(false) }
     var isStarredFolderOpen by remember { mutableStateOf(false) }
+    var isCycleDateDialogOpen by remember { mutableStateOf(false) }
     var selectedMessageIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var scrollToMessageId by remember { mutableStateOf<Long?>(null) }
 
@@ -591,6 +592,9 @@ fun SMSAppScreen(
     var starredMessages by remember { mutableStateOf<List<Pair<SmsMessage, String>>>(emptyList()) }
     var refreshCounter by remember { mutableIntStateOf(0) }
     var activeTab by rememberSaveable { mutableStateOf("INBOX") } // INBOX, ARCHIVE, or FINANCE
+
+    val financePrefs = remember { FinancePrefs(context) }
+    var cycleDate by remember { mutableStateOf(financePrefs.getCycleDate()) }
 
     // Swipe to delete thread states
     // Removed legacy threadToDelete state (now handled via soft deletion)
@@ -618,6 +622,8 @@ fun SMSAppScreen(
             refreshCounter++
         } else if (isStarredFolderOpen) {
             isStarredFolderOpen = false
+        } else if (isCycleDateDialogOpen) {
+            isCycleDateDialogOpen = false
         }
     }
 
@@ -1343,6 +1349,20 @@ fun MainThreadsScreen(
                             onClick = {
                                 expanded = false
                                 onOpenStarredFolder()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Cycle Date",
+                                    color = TextPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            onClick = {
+                                expanded = false
+                                isCycleDateDialogOpen = true
                             }
                         )
                     }
