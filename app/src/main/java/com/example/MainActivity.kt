@@ -1156,7 +1156,21 @@ fun SMSAppScreen(
                     },
                     onOpenDeletedFolder = { isDeletedFolderOpen = true },
                     onOpenStarredFolder = { isStarredFolderOpen = true },
+                    onOpenCycleDateDialog = { isCycleDateDialogOpen = true },
                     onComposeClick = { isNewMessageOpen = true }
+                )
+            }
+
+            if (isCycleDateDialogOpen) {
+                CycleDateDialog(
+                    currentDate = cycleDate,
+                    onDismiss = { isCycleDateDialogOpen = false },
+                    onSave = { newDate ->
+                        financePrefs.setCycleDate(newDate)
+                        cycleDate = newDate
+                        isCycleDateDialogOpen = false
+                        refreshCounter++
+                    }
                 )
             }
         }
@@ -1175,6 +1189,7 @@ fun MainThreadsScreen(
     onThreadDelete: (SmsThread) -> Unit,
     onOpenDeletedFolder: () -> Unit,
     onOpenStarredFolder: () -> Unit,
+    onOpenCycleDateDialog: () -> Unit,
     onComposeClick: () -> Unit
 ) {
     val pagerState = rememberPagerState(initialPage = when (activeTab) {
@@ -1362,7 +1377,7 @@ fun MainThreadsScreen(
                             },
                             onClick = {
                                 expanded = false
-                                isCycleDateDialogOpen = true
+                                onOpenCycleDateDialog()
                             }
                         )
                     }
