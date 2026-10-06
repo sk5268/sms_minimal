@@ -88,4 +88,38 @@ class DebitNoteAndCategoryTest {
         }
         assertEquals("Rs 250.00 debited from account", displayText)
     }
+
+    @Test
+    fun parentCategoryGroupAggregatesSubcategorySpending() {
+        val officeParent = CategoryEntity(id = 1, name = "Office", colorArgb = 0, sortOrder = 0)
+        val partySub = CategoryEntity(id = 2, name = "Party", colorArgb = 0, sortOrder = 1, parentCategoryId = 1)
+        val accessoriesSub = CategoryEntity(id = 3, name = "Accessories", colorArgb = 0, sortOrder = 2, parentCategoryId = 1)
+
+        val categories = listOf(officeParent, partySub, accessoriesSub)
+        val subcategoryParentMap = categories.filter { it.parentCategoryId != null }.groupBy { it.parentCategoryId!! }
+
+        val debits = listOf(
+            DebitEntity(id = 1, messageKey = "k1", amountPaise = 100000, sender = "Bank", snippet = "Party", categoryId = 2, occurredAt = 1000L),
+            DebitEntity(id = 2, messageKey = "k2", amountPaise = 200000, sender = "Bank", snippet = "Combo", categoryId = 3, occurredAt = 2000L)
+        )
+
+        val subs = subcategoryParentMap[officeParent.id].orEmpty()
+        val allIds = setOf(officeParent.id) + subs.map { it.id }
+        val totalAmount = debits.filter { it.categoryId in allIds }.sumOf { it.amountPaise }
+        val subTotals = subs.map { sub -> sub to debits.filter { it.categoryId == sub.id }.sumOf { it.amountPaise } }
+
+        assertEquals(300000L, totalAmount)
+        assertEquals(2, subTotals.size)
+        assertEquals("Party" to 100000L, subTotals[0].first.name to subTotals[0].second)
+        assertEquals("Accessories" to 200000L, subTotals[1].first.name to subTotals[1].second)
+    }
+
+    @Test
+    fun categoryEntitySupportsParentCategoryIdAssignment() {
+        val standaloneCat = CategoryEntity(id = 10, name = "Groceries", colorArgb = 0, sortOrder = 0)
+        assertEquals(null, standaloneCat.parentCategoryId)
+
+        val childCat = standaloneCat.copy(parentCategoryId = 1)
+        assertEquals(1L, childCat.parentCategoryId)
+    }
 }

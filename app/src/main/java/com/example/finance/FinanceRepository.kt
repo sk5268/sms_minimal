@@ -182,7 +182,7 @@ class FinanceRepository(context: Context) {
         return true
     }
 
-    suspend fun addCategory(name: String, colorArgb: Int): Long {
+    suspend fun addCategory(name: String, colorArgb: Int, parentCategoryId: Long? = null): Long {
         val categories = dao.getCategories()
         val sortOrder = (categories.maxOfOrNull { it.sortOrder } ?: 0) + 1
         return dao.insertCategory(
@@ -190,13 +190,20 @@ class FinanceRepository(context: Context) {
                 name = name.trim(),
                 colorArgb = colorArgb,
                 sortOrder = sortOrder,
-                isSystem = false
+                isSystem = false,
+                parentCategoryId = parentCategoryId
             )
         )
     }
 
+    suspend fun setParentCategory(categoryId: Long, parentCategoryId: Long?) {
+        if (categoryId == parentCategoryId) return
+        dao.updateParentCategory(categoryId, parentCategoryId)
+    }
+
     suspend fun deleteCategory(categoryId: Long) {
         val uncategorizedId = dao.getCategoryByName("Uncategorized")?.id ?: return
+        dao.unlinkSubcategories(categoryId)
         dao.reassignDebits(categoryId, uncategorizedId)
         dao.deleteCategory(categoryId)
     }
@@ -205,7 +212,8 @@ class FinanceRepository(context: Context) {
         monthsCount: Int,
         targetYear: Int,
         targetMonthZeroIndexed: Int,
-        categoryId: Long? = null
+        categoryId: Long? = null,
+        categoryIds: List<Long>? = null
     ): List<MonthTotalPoint> = withContext(Dispatchers.IO) {
         ensureSeeded()
         val list = mutableListOf<MonthTotalPoint>()
@@ -219,13 +227,19 @@ class FinanceRepository(context: Context) {
             set(Calendar.MILLISECOND, 0)
         }
 
+        val targetCategoryIds = when {
+            !categoryIds.isNullOrEmpty() -> categoryIds
+            categoryId != null && categoryId > 0L -> listOf(categoryId)
+            else -> emptyList()
+        }
+
         // Generate N months going backwards, then reverse to chronological order
         for (i in 0 until monthsCount) {
             val yr = cal.get(Calendar.YEAR)
             val mo = cal.get(Calendar.MONTH)
             val (startMs, endMs) = getMonthBounds(yr, mo)
-            val total = if (categoryId != null && categoryId > 0L) {
-                dao.categorySumBetween(categoryId, startMs, endMs)
+            val total = if (targetCategoryIds.isNotEmpty()) {
+                targetCategoryIds.sumOf { dao.categorySumBetween(it, startMs, endMs) }
             } else {
                 dao.sumBetween(startMs, endMs)
             }

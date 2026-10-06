@@ -34,6 +34,15 @@ interface FinanceDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertCategory(category: CategoryEntity): Long
 
+    @Update
+    suspend fun updateCategory(category: CategoryEntity)
+
+    @Query("UPDATE categories SET parentCategoryId = :parentCategoryId WHERE id = :categoryId")
+    suspend fun updateParentCategory(categoryId: Long, parentCategoryId: Long?)
+
+    @Query("UPDATE categories SET parentCategoryId = NULL WHERE parentCategoryId = :parentCategoryId")
+    suspend fun unlinkSubcategories(parentCategoryId: Long)
+
     @Query("DELETE FROM categories WHERE id = :id AND isSystem = 0")
     suspend fun deleteCategory(id: Long)
 

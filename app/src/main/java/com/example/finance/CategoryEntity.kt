@@ -10,5 +10,6 @@ data class CategoryEntity(
     val colorArgb: Int,
     val sortOrder: Int,
     val isSystem: Boolean = false,
+    val parentCategoryId: Long? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
