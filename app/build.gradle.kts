@@ -6,7 +6,9 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
+  alias(libs.plugins.google.services)
 }
+
 
 android {
   namespace = "com.example"
@@ -90,7 +92,11 @@ dependencies {
   // implementation(libs.coil.compose)
 
   // implementation(libs.firebase.ai)
+  implementation(platform(libs.firebase.bom))
+  implementation(libs.firebase.firestore)
+  implementation(libs.firebase.auth)
   implementation(libs.kotlinx.coroutines.android)
+
   implementation(libs.kotlinx.coroutines.core)
 
 

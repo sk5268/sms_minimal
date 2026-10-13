@@ -122,7 +122,8 @@ data class SmsThread(
     val snippet: String,
     val timestamp: Long,
     val unreadCount: Int,
-    val isArchived: Boolean
+    val isArchived: Boolean,
+    val allThreadIds: Set<Long> = setOf(threadId)
 )
 
 data class ContactRecipient(
@@ -823,7 +824,7 @@ fun SMSAppScreen(
                 activeMessages = msgs
             }
             withContext(Dispatchers.IO) {
-                markThreadAsRead(context, currentThread.threadId, currentThread.address)
+                markThreadAsRead(context, currentThread.threadId, currentThread.address, currentThread.allThreadIds)
                 if (!currentThread.address.isNullOrBlank()) {
                     SmsReceiver.dismissSenderNotification(context, currentThread.address)
                 }
@@ -1141,16 +1142,18 @@ fun SMSAppScreen(
                         }
                     },
                     onArchiveToggle = { thread ->
+                        val targetIds = thread.allThreadIds.ifEmpty { setOf(thread.threadId) }
                         if (thread.isArchived) {
-                            archiveManager.unarchiveThread(context, thread.threadId)
+                            targetIds.forEach { archiveManager.unarchiveThread(context, it) }
                         } else {
-                            archiveManager.archiveThread(context, thread.threadId)
+                            targetIds.forEach { archiveManager.archiveThread(context, it) }
                         }
                         archivedIds = archiveManager.getArchivedThreadIds()
                         unarchivedIds = archiveManager.getUnarchivedThreadIds()
                     },
                     onThreadDelete = { thread ->
-                        deleteManager.softDeleteThread(thread.threadId)
+                        val targetIds = thread.allThreadIds.ifEmpty { setOf(thread.threadId) }
+                        targetIds.forEach { deleteManager.softDeleteThread(it) }
                         deletedIds = deleteManager.getDeletedThreads().keys
                         refreshCounter++
                     },
@@ -3456,8 +3459,41 @@ private fun queryAllThreads(
     val fromConversations = queryThreadsFromConversations(
         context, archivedIds, unarchivedIds, deletedIds, deletedMessages, onlyDeleted
     )
-    if (fromConversations != null) return fromConversations
-    return queryThreadsFromSmsScan(context, archivedIds, unarchivedIds, deletedIds, deletedMessages, onlyDeleted)
+    val rawThreads = fromConversations ?: queryThreadsFromSmsScan(
+        context, archivedIds, unarchivedIds, deletedIds, deletedMessages, onlyDeleted
+    )
+    return mergeThreadsByConversation(rawThreads)
+}
+
+private fun mergeThreadsByConversation(threads: List<SmsThread>): List<SmsThread> {
+    if (threads.isEmpty()) return emptyList()
+
+    val grouped = threads.groupBy { SmsAddress.conversationKey(it.address) }
+    val result = mutableListOf<SmsThread>()
+
+    for ((key, group) in grouped) {
+        if (key.isEmpty() || group.size == 1) {
+            result.addAll(group)
+            continue
+        }
+
+        // Multiple threads belong to the same entity / contact
+        val primary = group.maxByOrNull { it.timestamp } ?: group.first()
+        val allIds = group.flatMap { it.allThreadIds }.toSet()
+        val totalUnread = group.sumOf { it.unreadCount }
+        // If all sub-threads are archived, mark archived; if any is active in inbox, keep in inbox
+        val isArchived = group.all { it.isArchived }
+
+        result.add(
+            primary.copy(
+                unreadCount = totalUnread,
+                isArchived = isArchived,
+                allThreadIds = allIds
+            )
+        )
+    }
+
+    return result.sortedByDescending { it.timestamp }
 }
 
 private fun queryThreadsFromConversations(
@@ -3543,7 +3579,7 @@ private fun queryThreadsFromConversations(
                 }
 
                 val name = contactCache.getOrPut(address) {
-                    getContactName(context, address) ?: address
+                    getContactName(context, address) ?: SmsAddress.cleanDisplayName(address)
                 }
                 val isArchived =
                     (archivedIds.contains(threadId) || systemArchived) && !unarchivedIds.contains(threadId)
@@ -3817,7 +3853,7 @@ private fun queryThreadsFromSmsScan(
                     ?: "Unknown"
 
                 val name = contactCache.getOrPut(address) {
-                    getContactName(context, address) ?: address
+                    getContactName(context, address) ?: SmsAddress.cleanDisplayName(address)
                 }
 
                 val unreadCount = msgs.count { it.read == 0 && it.type == 1 }
@@ -3849,7 +3885,7 @@ private fun findThreadForNotification(
     threadId: Long
 ): SmsThread? {
     if (threadId > 0L) {
-        threads.find { it.threadId == threadId }?.let { return it }
+        threads.find { it.threadId == threadId || it.allThreadIds.contains(threadId) }?.let { return it }
     }
     if (!sender.isNullOrEmpty()) {
         threads.find {
@@ -4055,7 +4091,23 @@ private fun queryMessagesForThread(
         loaded
     }
 
-    return pruned.sortedBy { it.timestamp }
+    return deduplicateMessages(pruned)
+}
+
+private fun deduplicateMessages(messages: List<SmsMessage>): List<SmsMessage> {
+    val sorted = messages.sortedBy { it.timestamp }
+    val result = mutableListOf<SmsMessage>()
+    for (msg in sorted) {
+        val isDuplicate = result.any { prev ->
+            prev.type == msg.type &&
+            prev.body.trim().equals(msg.body.trim(), ignoreCase = true) &&
+            Math.abs(prev.timestamp - msg.timestamp) <= 120_000L
+        }
+        if (!isDuplicate) {
+            result.add(msg)
+        }
+    }
+    return result
 }
 
 private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessage>? {
@@ -4100,35 +4152,42 @@ private fun queryMessagesByIds(context: Context, ids: Set<Long>): List<SmsMessag
     return messages
 }
 
-private fun markThreadAsRead(context: Context, threadId: Long, address: String? = null) {
+private fun markThreadAsRead(
+    context: Context,
+    threadId: Long,
+    address: String? = null,
+    allThreadIds: Set<Long> = emptySet()
+) {
     val values = ContentValues().apply {
         put("read", 1)
     }
-    if (threadId > 0L) {
+    val idsToMark = (allThreadIds + threadId).filter { it > 0L }
+    for (id in idsToMark) {
         try {
             context.contentResolver.update(
                 Uri.parse("content://sms/inbox"),
                 values,
                 "thread_id = ? AND read = 0",
-                arrayOf(threadId.toString())
+                arrayOf(id.toString())
             )
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return
     }
-    // Only when the thread could not be resolved. Matching on address alone would
-    // also clear unread messages in other threads from the same sender.
     if (!address.isNullOrBlank() && address != "Unknown") {
-        try {
-            context.contentResolver.update(
-                Uri.parse("content://sms/inbox"),
-                values,
-                "address = ? AND read = 0",
-                arrayOf(address)
-            )
-        } catch (e: Exception) {
-            e.printStackTrace()
+        val patterns = SmsAddress.sqlLikePatterns(address)
+        for (pattern in patterns) {
+            try {
+                val clause = if (pattern.contains('%')) "address LIKE ? AND read = 0" else "address = ? AND read = 0"
+                context.contentResolver.update(
+                    Uri.parse("content://sms/inbox"),
+                    values,
+                    clause,
+                    arrayOf(pattern)
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 }
@@ -4345,13 +4404,17 @@ fun DeletedThreadsScreen(
                             onSelect = {}, // No action on select for deleted
                             onArchive = {
                                 // Restore action
-                                deleteManager.restoreThread(thread.threadId)
+                                val targetIds = thread.allThreadIds.ifEmpty { setOf(thread.threadId) }
+                                targetIds.forEach { deleteManager.restoreThread(it) }
                                 onRefresh()
                             },
                             onDelete = {
                                 // Permanently delete
-                                permanentlyDeleteThread(context, thread.threadId)
-                                deleteManager.restoreThread(thread.threadId)
+                                val targetIds = thread.allThreadIds.ifEmpty { setOf(thread.threadId) }
+                                targetIds.forEach {
+                                    permanentlyDeleteThread(context, it)
+                                    deleteManager.restoreThread(it)
+                                }
                                 onRefresh()
                             }
                         )

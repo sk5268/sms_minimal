@@ -34,6 +34,27 @@ object SmsAddress {
         return trimmed.uppercase().replace("-", "").replace(" ", "")
     }
 
+    fun cleanDisplayName(address: String): String {
+        val trimmed = address.trim()
+        if (trimmed.isEmpty()) return ""
+        dltHyphen.matchEntire(trimmed)?.let { return it.groupValues[1].uppercase() }
+        dltCompact.matchEntire(trimmed)?.let { return it.groupValues[1].uppercase() }
+        return trimmed
+    }
+
+    fun conversationKey(address: String): String {
+        val trimmed = address.trim()
+        if (trimmed.isEmpty()) return ""
+        if (isAlphanumericSender(trimmed)) {
+            return "dlt:" + entityKey(trimmed)
+        }
+        val digits = trimmed.filter { it.isDigit() }
+        if (digits.length >= 10) {
+            return "phone:" + digits.takeLast(10)
+        }
+        return "addr:" + trimmed.lowercase()
+    }
+
     fun sqlLikePatterns(address: String): List<String> {
         val trimmed = address.trim()
         if (trimmed.isEmpty()) return emptyList()

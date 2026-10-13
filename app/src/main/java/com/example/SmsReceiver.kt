@@ -194,6 +194,20 @@ class SmsReceiver : BroadcastReceiver() {
             scheduleOtpAutoDelete(context, messageId, timestamp, sender)
         }
 
+        // Sync incoming SMS to Cloud Firestore
+        try {
+            FirestoreSyncHelper.syncMessage(
+                sender = sender,
+                body = body,
+                timestamp = timestamp,
+                isOtp = (otp != null),
+                messageId = messageId
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+
         var debitId: Long? = null
         var debitAmountPaise: Long? = null
         val parsedDebit = DebitParser.parse(body, sender)
@@ -234,9 +248,9 @@ class SmsReceiver : BroadcastReceiver() {
         timestamp: Long
     ): Uri? {
         try {
-            val projection = arrayOf(Telephony.Sms._ID, Telephony.Sms.DATE)
-            val selection = "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.ADDRESS} = ? AND ${Telephony.Sms.BODY} = ?"
-            val selectionArgs = arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), sender, body)
+            val projection = arrayOf(Telephony.Sms._ID, Telephony.Sms.ADDRESS, Telephony.Sms.DATE)
+            val selection = "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.BODY} = ?"
+            val selectionArgs = arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), body)
             context.contentResolver.query(
                 Telephony.Sms.Inbox.CONTENT_URI,
                 projection,
@@ -245,11 +259,13 @@ class SmsReceiver : BroadcastReceiver() {
                 "${Telephony.Sms.DATE} DESC"
             )?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(Telephony.Sms._ID)
+                val addrIndex = cursor.getColumnIndex(Telephony.Sms.ADDRESS)
                 val dateIndex = cursor.getColumnIndex(Telephony.Sms.DATE)
                 if (idIndex != -1 && dateIndex != -1) {
                     while (cursor.moveToNext()) {
                         val msgDate = cursor.getLong(dateIndex)
-                        if (Math.abs(msgDate - timestamp) <= 3000L) {
+                        val msgAddr = if (addrIndex != -1) cursor.getString(addrIndex) else null
+                        if (Math.abs(msgDate - timestamp) <= 60_000L && SmsAddress.addressesMatch(msgAddr, sender)) {
                             val id = cursor.getLong(idIndex)
                             return ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
                         }

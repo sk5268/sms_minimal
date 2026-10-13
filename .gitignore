@@ -33,3 +33,8 @@ backup_data/
 *.db-wal
 *.db-shm
 app/src/main/assets/*.db
+
+# Firebase CLI cache & configuration
+.firebase/
+app/google-services.json
+

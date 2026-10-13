@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMS Lite - Cloud Viewer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20width=%22100%22%20height=%22100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #0b0c10;
+      color: #e5e7eb;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background-color: #262626;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4 selection:bg-indigo-500 selection:text-white">
+
+  <!-- Header -->
+  <header class="w-full max-w-3xl flex items-center justify-between py-4 border-b border-neutral-800 mb-6">
+    <div class="flex items-center space-x-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">
+        ✉
+      </div>
+      <div>
+        <h1 class="text-xl font-bold tracking-tight text-white">SMS Lite Web</h1>
+        <p class="text-xs text-neutral-400">Personal SMS Cloud Viewer</p>
+      </div>
+    </div>
+    
+    <div id="authContainer" class="flex items-center space-x-3">
+      <span id="userStatus" class="text-xs text-neutral-500">Checking auth...</span>
+      <button id="authBtn" class="hidden px-4 py-1.5 text-xs font-semibold rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white transition-colors duration-150 border border-neutral-700">
+        Sign In
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="w-full max-w-3xl flex-1 flex flex-col">
+    <!-- Unauthenticated State -->
+    <div id="loggedOutView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-neutral-900/40 rounded-2xl border border-neutral-800">
+      <div class="w-16 h-16 rounded-full bg-neutral-800/80 flex items-center justify-center text-3xl mb-4">
+        🔒
+      </div>
+      <h2 class="text-lg font-semibold text-white mb-2">Access Restricted</h2>
+      <p class="text-sm text-neutral-400 max-w-sm mb-6">
+        This portal is strictly restricted to <span class="font-mono text-indigo-400">torasfk@gmail.com</span>. Sign in with your Google account to view your synced SMS messages.
+      </p>
+      <button id="loginWithGoogleBtn" class="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-white text-neutral-900 font-medium text-sm hover:bg-neutral-200 transition-all shadow-md">
+        <svg class="w-4 h-4" viewBox="0 0 24 24">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+        </svg>
+        <span>Sign in with Google</span>
+      </button>
+    </div>
+
+    <!-- Access Denied State (Wrong user) -->
+    <div id="unauthorizedView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-red-950/20 rounded-2xl border border-red-900/40">
+      <div class="w-14 h-14 rounded-full bg-red-900/40 flex items-center justify-center text-2xl text-red-400 mb-3">
+        ⛔
+      </div>
+      <h2 class="text-base font-semibold text-red-300 mb-1">Access Denied</h2>
+      <p class="text-xs text-neutral-400 mb-4 max-w-sm">
+        Logged in as <span id="unauthorizedEmail" class="font-mono text-neutral-300"></span>. This account does not have permission to view these messages.
+      </p>
+      <button id="switchUserBtn" class="text-xs underline text-neutral-400 hover:text-white">Sign out and switch account</button>
+    </div>
+
+    <!-- Authorized Inbox View -->
+    <div id="inboxView" class="hidden flex flex-col flex-1">
+      <!-- Search & Controls -->
+      <div class="flex items-center space-x-3 mb-4">
+        <div class="relative flex-1">
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Search messages, OTPs, or senders..."
+            class="w-full bg-neutral-900/80 border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+          />
+          <span class="absolute left-3.5 top-2.5 text-neutral-500 text-sm">🔍</span>
+        </div>
+        <button id="refreshBtn" title="Refresh messages" class="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-400 hover:text-white hover:bg-neutral-800 transition">
+          🔄
+        </button>
+      </div>
+
+      <!-- Live Message Feed -->
+      <div id="messageList" class="flex flex-col space-y-3 custom-scrollbar overflow-y-auto">
+        <div class="text-center py-16 text-neutral-500 text-sm">
+          Loading messages...
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Firebase Modular Scripts -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { 
+      getAuth, 
+      GoogleAuthProvider, 
+      signInWithPopup, 
+      signOut, 
+      onAuthStateChanged 
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import { 
+      getFirestore, 
+      collection, 
+      query, 
+      orderBy, 
+      limit, 
+      onSnapshot 
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // Load Firebase config dynamically from Hosting reserved endpoint (avoids hardcoding keys in repo)
+    let firebaseConfig = null;
+    try {
+      const resp = await fetch("/__/firebase/init.json");
+      if (resp.ok) {
+        firebaseConfig = await resp.json();
+      }
+    } catch (e) {
+      console.warn("Could not load /__/firebase/init.json", e);
+    }
+
+    if (!firebaseConfig) {
+      // Fallback relative config if needed
+      firebaseConfig = {
+        projectId: "sms-minimal",
+        authDomain: "sms-minimal.firebaseapp.com"
+      };
+    }
+
+    const AUTHORIZED_EMAIL = "torasfk@gmail.com";
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+
+    const userStatus = document.getElementById("userStatus");
+    const authBtn = document.getElementById("authBtn");
+    const loggedOutView = document.getElementById("loggedOutView");
+    const unauthorizedView = document.getElementById("unauthorizedView");
+    const inboxView = document.getElementById("inboxView");
+    const messageList = document.getElementById("messageList");
+    const searchInput = document.getElementById("searchInput");
+    const loginWithGoogleBtn = document.getElementById("loginWithGoogleBtn");
+    const switchUserBtn = document.getElementById("switchUserBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+
+    let allMessages = [];
+    let unsubscribeFirestore = null;
+
+    // Login Action
+    const doLogin = async () => {
+      try {
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
+      } catch (err) {
+        alert("Sign-in failed: " + err.message);
+      }
+    };
+
+    // Logout Action
+    const doLogout = async () => {
+      if (unsubscribeFirestore) {
+        unsubscribeFirestore();
+        unsubscribeFirestore = null;
+      }
+      await signOut(auth);
+    };
+
+    authBtn.addEventListener("click", () => {
+      if (auth.currentUser) {
+        doLogout();
+      } else {
+        doLogin();
+      }
+    });
+
+    loginWithGoogleBtn.addEventListener("click", doLogin);
+    switchUserBtn.addEventListener("click", doLogout);
+    refreshBtn.addEventListener("click", () => {
+      if (auth.currentUser && auth.currentUser.email === AUTHORIZED_EMAIL) {
+        listenForMessages();
+      }
+    });
+
+    searchInput.addEventListener("input", (e) => {
+      renderMessages(allMessages, e.target.value.toLowerCase());
+    });
+
+    onAuthStateChanged(auth, (user) => {
+      authBtn.classList.remove("hidden");
+
+      if (!user) {
+        userStatus.textContent = "Not signed in";
+        authBtn.textContent = "Sign In";
+        loggedOutView.classList.remove("hidden");
+        unauthorizedView.classList.add("hidden");
+        inboxView.classList.add("hidden");
+        if (unsubscribeFirestore) unsubscribeFirestore();
+        return;
+      }
+
+      if (user.email !== AUTHORIZED_EMAIL) {
+        userStatus.textContent = user.email;
+        authBtn.textContent = "Sign Out";
+        document.getElementById("unauthorizedEmail").textContent = user.email;
+        loggedOutView.classList.add("hidden");
+        unauthorizedView.classList.remove("hidden");
+        inboxView.classList.add("hidden");
+        if (unsubscribeFirestore) unsubscribeFirestore();
+        return;
+      }
+
+      // Authorized User
+      userStatus.textContent = user.email;
+      authBtn.textContent = "Sign Out";
+      loggedOutView.classList.add("hidden");
+      unauthorizedView.classList.add("hidden");
+      inboxView.classList.remove("hidden");
+
+      listenForMessages();
+    });
+
+    function formatTime(timestamp) {
+      if (!timestamp) return "";
+      const d = new Date(timestamp);
+      return d.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    }
+
+    function renderMessages(messages, filter = "") {
+      const filtered = messages.filter(m => {
+        if (!filter) return true;
+        return (m.sender && m.sender.toLowerCase().includes(filter)) ||
+               (m.body && m.body.toLowerCase().includes(filter));
+      });
+
+      if (filtered.length === 0) {
+        messageList.innerHTML = `
+          <div class="text-center py-16 text-neutral-500 text-sm">
+            ${messages.length === 0 ? "No SMS messages synced yet. Incoming SMS will appear here automatically." : "No messages matching search."}
+          </div>
+        `;
+        return;
+      }
+
+      messageList.innerHTML = filtered.map(msg => {
+        const isOtp = msg.isOtp;
+        return `
+          <div class="bg-neutral-900/60 hover:bg-neutral-900/90 border border-neutral-800 rounded-2xl p-4 transition duration-150">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center space-x-2">
+                <span class="font-bold text-sm text-neutral-100">${escapeHtml(msg.sender || "Unknown")}</span>
+                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-semibold px-2 py-0.5 rounded-full">OTP</span>` : ""}
+              </div>
+              <span class="text-xs text-neutral-500 font-mono">${formatTime(msg.timestamp)}</span>
+            </div>
+            <p class="text-sm text-neutral-300 leading-relaxed whitespace-pre-wrap select-text font-normal">${escapeHtml(msg.body || "")}</p>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>'"]/g, 
+        tag => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          "'": '&#39;',
+          '"': '&quot;'
+        }[tag] || tag)
+      );
+    }
+
+    function listenForMessages() {
+      if (unsubscribeFirestore) unsubscribeFirestore();
+      
+      messageList.innerHTML = `<div class="text-center py-16 text-neutral-500 text-sm">Connecting to Firestore...</div>`;
+
+      const q = query(
+        collection(db, "sms"),
+        orderBy("timestamp", "desc"),
+        limit(200)
+      );
+
+      unsubscribeFirestore = onSnapshot(q, (snapshot) => {
+        allMessages = [];
+        snapshot.forEach((doc) => {
+          allMessages.push({ id: doc.id, ...doc.data() });
+        });
+        renderMessages(allMessages, searchInput.value.toLowerCase());
+      }, (err) => {
+        console.error("Firestore listener error:", err);
+        messageList.innerHTML = `
+          <div class="p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-xs text-red-400">
+            Failed to fetch messages: ${err.message}
+          </div>
+        `;
+      });
+    }
+  </script>
+</body>
+</html>
