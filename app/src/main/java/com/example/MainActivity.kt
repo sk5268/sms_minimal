@@ -264,7 +264,7 @@ private fun latestMessageDateInThread(context: Context, threadId: Long): Long {
 }
 
 // Ultra-light SharedPreferences Delete Manager for Soft Deletion (6 hours)
-class DeleteManager(context: Context) {
+class DeleteManager(private val context: Context) {
     private val prefs = context.getSharedPreferences("sms_delete_prefs", Context.MODE_PRIVATE)
     private val msgPrefs = context.getSharedPreferences("sms_delete_msg_prefs", Context.MODE_PRIVATE)
 
@@ -278,10 +278,12 @@ class DeleteManager(context: Context) {
 
     fun softDeleteThread(threadId: Long) {
         prefs.edit().putLong(threadId.toString(), System.currentTimeMillis()).apply()
+        FirestoreSyncHelper.scheduleDebouncedSync(context)
     }
 
     fun restoreThread(threadId: Long) {
         prefs.edit().remove(threadId.toString()).apply()
+        FirestoreSyncHelper.scheduleDebouncedSync(context)
     }
 
     /** Tombstones that can still be identity-checked, keyed by the row id they were created for. */
@@ -301,6 +303,7 @@ class DeleteManager(context: Context) {
             deletedAt = System.currentTimeMillis()
         )
         msgPrefs.edit().putString(messageId.toString(), tombstone.serialize()).apply()
+        FirestoreSyncHelper.scheduleDebouncedSync(context)
     }
 
     /**
@@ -316,6 +319,7 @@ class DeleteManager(context: Context) {
 
     fun restoreMessage(messageId: Long) {
         msgPrefs.edit().remove(messageId.toString()).apply()
+        FirestoreSyncHelper.scheduleDebouncedSync(context)
     }
 
     fun registerChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
@@ -527,6 +531,9 @@ private fun deleteSmsMessages(context: Context, ids: List<Long>): Boolean {
     var deletedAny = false
     for (id in ids) {
         if (deleteSmsById(context, id)) deletedAny = true
+    }
+    if (deletedAny) {
+        FirestoreSyncHelper.scheduleDebouncedSync(context)
     }
     return deletedAny
 }

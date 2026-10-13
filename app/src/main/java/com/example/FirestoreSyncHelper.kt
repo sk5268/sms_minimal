@@ -9,12 +9,34 @@ import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 object FirestoreSyncHelper {
     private const val TAG = "FirestoreSyncHelper"
     private const val COLLECTION_SMS = "sms"
+
+    private var debouncedSyncJob: Job? = null
+    private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Schedule a background sync with a debounce delay (default 3 seconds).
+     * Subsequent calls within the delay period reset the timer.
+     */
+    fun scheduleDebouncedSync(context: Context, delayMs: Long = 3000L) {
+        val appContext = context.applicationContext
+        debouncedSyncJob?.cancel()
+        debouncedSyncJob = syncScope.launch {
+            delay(delayMs)
+            Log.d(TAG, "Debounced timer elapsed ($delayMs ms). Executing auto sync and prune...")
+            syncAllHistoricMessages(appContext)
+        }
+    }
 
     private fun resolveContactName(context: Context, phoneNumber: String): String? {
         if (context.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
@@ -114,7 +136,7 @@ object FirestoreSyncHelper {
     }
 
     /**
-     * Query and sync all historic SMS in batches.
+     * Query and sync all historic SMS in batches, and prune deleted/orphaned messages from Firestore.
      */
     suspend fun syncAllHistoricMessages(
         context: Context,
@@ -158,10 +180,11 @@ object FirestoreSyncHelper {
 
         val deletedManager = DeleteManager(context)
         val deletedIds = deletedManager.getDeletedThreads().keys
+        val deletedMessages = deletedManager.getDeletedMessages()
         val contactCache = mutableMapOf<String, String>()
 
         val messagesToSync = mutableListOf<Map<String, Any?>>()
-
+        val activeDocIds = mutableSetOf<String>()
 
         val uri = Telephony.Sms.CONTENT_URI
         val projection = arrayOf(
@@ -200,6 +223,10 @@ object FirestoreSyncHelper {
                     val timestamp = if (dateIdx != -1) cursor.getLong(dateIdx) else 0L
                     val type = if (typeIdx != -1) cursor.getInt(typeIdx) else 1
 
+                    // Skip soft-deleted individual messages
+                    val tombstone = deletedMessages[msgId]
+                    if (tombstone != null && tombstone.matches(timestamp, address)) continue
+
                     // Only sync inbox and sent
                     if (type != Telephony.Sms.MESSAGE_TYPE_INBOX && type != Telephony.Sms.MESSAGE_TYPE_SENT) {
                         continue
@@ -208,13 +235,13 @@ object FirestoreSyncHelper {
                     val isArchived = (prefArchivedIds.contains(threadId) || systemArchivedIds.contains(threadId)) && !prefUnarchivedIds.contains(threadId)
                     val isOtp = OtpClassifier.extractOtp(body) != null
 
-
                     val contactName = contactCache.getOrPut(address) {
                         resolveContactName(context, address) ?: SmsAddress.cleanDisplayName(address)
                     }
                     val conversationKey = SmsAddress.conversationKey(address)
 
                     val docId = "msg_$msgId"
+                    activeDocIds.add(docId)
                     messagesToSync.add(
                         mapOf(
                             "docId" to docId,
@@ -260,6 +287,46 @@ object FirestoreSyncHelper {
                 Log.e(TAG, "Error committing batch sync", e)
                 lastError = e.localizedMessage
             }
+        }
+
+        // Prune deleted or orphaned messages from Firestore
+        try {
+            val snapshot = com.google.android.gms.tasks.Tasks.await(db.collection(COLLECTION_SMS).get())
+            val docsToDelete = mutableListOf<com.google.firebase.firestore.DocumentReference>()
+            for (doc in snapshot.documents) {
+                val docId = doc.id
+                val docThreadId = doc.getLong("threadId")
+
+                val isDeletedThread = docThreadId != null && deletedIds.contains(docThreadId)
+                val isDeletedMsg = if (docId.startsWith("msg_")) {
+                    val msgId = docId.substring(4).toLongOrNull()
+                    if (msgId != null) {
+                        val tombstone = deletedMessages[msgId]
+                        val docTimestamp = doc.getLong("timestamp") ?: 0L
+                        val docSender = doc.getString("sender")
+                        tombstone != null && tombstone.matches(docTimestamp, docSender)
+                    } else false
+                } else false
+                val isNotActive = !activeDocIds.contains(docId)
+
+                if (isDeletedThread || isDeletedMsg || isNotActive) {
+                    docsToDelete.add(doc.reference)
+                }
+            }
+
+            if (docsToDelete.isNotEmpty()) {
+                val deleteChunks = docsToDelete.chunked(250)
+                for (chunk in deleteChunks) {
+                    val deleteBatch = db.batch()
+                    for (ref in chunk) {
+                        deleteBatch.delete(ref)
+                    }
+                    com.google.android.gms.tasks.Tasks.await(deleteBatch.commit())
+                }
+                Log.d(TAG, "Successfully pruned ${docsToDelete.size} deleted/orphaned messages from Firestore")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error pruning deleted messages from Firestore", e)
         }
 
         withContext(Dispatchers.Main) {
