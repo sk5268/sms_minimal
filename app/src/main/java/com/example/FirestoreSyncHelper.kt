@@ -1,6 +1,9 @@
 package com.example
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.ContactsContract
 import android.provider.Telephony
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
@@ -13,35 +16,67 @@ object FirestoreSyncHelper {
     private const val TAG = "FirestoreSyncHelper"
     private const val COLLECTION_SMS = "sms"
 
+    private fun resolveContactName(context: Context, phoneNumber: String): String? {
+        if (context.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        val uri = Uri.withAppendedPath(
+            ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+            Uri.encode(phoneNumber)
+        )
+        val projection = arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME)
+        try {
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME)
+                    if (index != -1) {
+                        return cursor.getString(index)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
+    }
+
     /**
      * Upload an incoming message to Firestore under collection `sms`.
      */
     fun syncMessage(
+        context: Context,
         sender: String,
         body: String,
         timestamp: Long,
         isOtp: Boolean = false,
         messageId: Long? = null,
-        isArchived: Boolean = false
+        isArchived: Boolean = false,
+        threadId: Long? = null
     ) {
         val auth = FirebaseAuth.getInstance()
         val currentUser = auth.currentUser
 
+        val contactName = resolveContactName(context, sender) ?: SmsAddress.cleanDisplayName(sender)
+        val conversationKey = SmsAddress.conversationKey(sender)
+
         if (currentUser == null) {
             auth.signInAnonymously()
                 .addOnSuccessListener {
-                    writeMessageDocument(sender, body, timestamp, isOtp, messageId, isArchived)
+                    writeMessageDocument(sender, contactName, conversationKey, threadId, body, timestamp, isOtp, messageId, isArchived)
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to authenticate anonymously with Firebase", e)
                 }
         } else {
-            writeMessageDocument(sender, body, timestamp, isOtp, messageId, isArchived)
+            writeMessageDocument(sender, contactName, conversationKey, threadId, body, timestamp, isOtp, messageId, isArchived)
         }
     }
 
     private fun writeMessageDocument(
         sender: String,
+        contactName: String,
+        conversationKey: String,
+        threadId: Long?,
         body: String,
         timestamp: Long,
         isOtp: Boolean,
@@ -57,6 +92,9 @@ object FirestoreSyncHelper {
 
         val data = hashMapOf(
             "sender" to sender,
+            "contactName" to contactName,
+            "conversationKey" to conversationKey,
+            "threadId" to (threadId ?: 0L),
             "body" to body,
             "timestamp" to timestamp,
             "isOtp" to isOtp,
@@ -94,10 +132,10 @@ object FirestoreSyncHelper {
             }
         }
 
-
         val archivedIds = ArchiveManager(context).getArchivedThreadIds()
         val deletedManager = DeleteManager(context)
         val deletedIds = deletedManager.getDeletedThreads().keys
+        val contactCache = mutableMapOf<String, String>()
 
         val messagesToSync = mutableListOf<Map<String, Any?>>()
 
@@ -146,11 +184,19 @@ object FirestoreSyncHelper {
                     val isArchived = archivedIds.contains(threadId)
                     val isOtp = OtpClassifier.extractOtp(body) != null
 
+                    val contactName = contactCache.getOrPut(address) {
+                        resolveContactName(context, address) ?: SmsAddress.cleanDisplayName(address)
+                    }
+                    val conversationKey = SmsAddress.conversationKey(address)
+
                     val docId = "msg_$msgId"
                     messagesToSync.add(
                         mapOf(
                             "docId" to docId,
                             "sender" to address,
+                            "contactName" to contactName,
+                            "conversationKey" to conversationKey,
+                            "threadId" to threadId,
                             "body" to body,
                             "timestamp" to timestamp,
                             "isOtp" to isOtp,
@@ -196,4 +242,3 @@ object FirestoreSyncHelper {
         }
     }
 }
-

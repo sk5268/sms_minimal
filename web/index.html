@@ -4,8 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SMS Lite - Cloud Viewer</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20width=%22100%22%20height=%22100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20width=%22100%22%20height=%22100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%236366f1%22/><path d=%22M25 35h50v30H45L30 75V35z%22 fill=%22white%22/></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
   <style>
     body {
       background-color: #0b0c10;
@@ -13,48 +15,60 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     .custom-scrollbar::-webkit-scrollbar {
-      width: 6px;
+      width: 5px;
     }
     .custom-scrollbar::-webkit-scrollbar-thumb {
       background-color: #262626;
-      border-radius: 3px;
+      border-radius: 4px;
+    }
+    .thread-card {
+      transition: all 0.15s ease-in-out;
+    }
+    .thread-card:hover {
+      background-color: #15171f;
+      border-color: #272a38;
     }
   </style>
 </head>
-<body class="min-h-screen flex flex-col items-center p-4 selection:bg-indigo-500 selection:text-white">
+<body class="min-h-screen flex flex-col items-center p-3 sm:p-5 selection:bg-indigo-500 selection:text-white">
 
   <!-- Header -->
-  <header class="w-full max-w-3xl flex items-center justify-between py-4 border-b border-neutral-800 mb-5">
+  <header class="w-full max-w-3xl flex items-center justify-between py-3.5 border-b border-neutral-800/80 mb-4">
     <div class="flex items-center space-x-3">
-      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">
-        ✉
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+        <i data-lucide="message-square" class="w-5 h-5"></i>
       </div>
       <div>
-        <h1 class="text-xl font-bold tracking-tight text-white">SMS Lite Web</h1>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center space-x-2">
+          <span>SMS Lite</span>
+          <span class="text-[10px] font-mono tracking-wider px-2 py-0.5 rounded-full bg-indigo-950/80 text-indigo-400 border border-indigo-800/50">WEB</span>
+        </h1>
         <p class="text-xs text-neutral-400">Personal SMS Cloud Viewer</p>
       </div>
     </div>
     
     <div id="authContainer" class="flex items-center space-x-3">
-      <span id="userStatus" class="text-xs text-neutral-500">Checking auth...</span>
-      <button id="authBtn" class="hidden px-4 py-1.5 text-xs font-semibold rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white transition-colors duration-150 border border-neutral-700">
-        Sign In
+      <span id="userStatus" class="text-xs text-neutral-500 font-mono hidden sm:inline"></span>
+      <button id="authBtn" class="hidden flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors border border-neutral-700">
+        <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+        <span id="authBtnText">Sign In</span>
       </button>
     </div>
   </header>
 
   <!-- Main Container -->
   <main class="w-full max-w-3xl flex-1 flex flex-col">
+
     <!-- Unauthenticated State -->
     <div id="loggedOutView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-neutral-900/40 rounded-2xl border border-neutral-800">
-      <div class="w-16 h-16 rounded-full bg-neutral-800/80 flex items-center justify-center text-3xl mb-4">
-        🔒
+      <div class="w-14 h-14 rounded-2xl bg-neutral-800/80 flex items-center justify-center text-neutral-300 mb-4 border border-neutral-700/50">
+        <i data-lucide="shield-alert" class="w-7 h-7 text-indigo-400"></i>
       </div>
-      <h2 class="text-lg font-semibold text-white mb-2">Access Restricted</h2>
-      <p class="text-sm text-neutral-400 max-w-sm mb-6">
-        This portal is strictly restricted to <span class="font-mono text-indigo-400">torasfk@gmail.com</span>. Sign in with your Google account to view your synced SMS messages.
+      <h2 class="text-base font-semibold text-white mb-2">Private SMS Dashboard</h2>
+      <p class="text-xs text-neutral-400 max-w-sm mb-6 leading-relaxed">
+        Restricted to <span class="font-mono text-indigo-400 font-semibold">torasfk@gmail.com</span>. Sign in with your Google account to access your synced messages.
       </p>
-      <button id="loginWithGoogleBtn" class="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-white text-neutral-900 font-medium text-sm hover:bg-neutral-200 transition-all shadow-md">
+      <button id="loginWithGoogleBtn" class="flex items-center space-x-2.5 px-5 py-2.5 rounded-xl bg-white text-neutral-900 font-medium text-xs hover:bg-neutral-200 transition-all shadow-md">
         <svg class="w-4 h-4" viewBox="0 0 24 24">
           <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
           <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -65,62 +79,85 @@
       </button>
     </div>
 
-    <!-- Access Denied State (Wrong user) -->
+    <!-- Access Denied State (Wrong account) -->
     <div id="unauthorizedView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-red-950/20 rounded-2xl border border-red-900/40">
-      <div class="w-14 h-14 rounded-full bg-red-900/40 flex items-center justify-center text-2xl text-red-400 mb-3">
-        ⛔
+      <div class="w-14 h-14 rounded-2xl bg-red-900/30 flex items-center justify-center text-red-400 mb-3 border border-red-800/40">
+        <i data-lucide="ban" class="w-7 h-7"></i>
       </div>
-      <h2 class="text-base font-semibold text-red-300 mb-1">Access Denied</h2>
+      <h2 class="text-sm font-semibold text-red-300 mb-1">Unauthorized Account</h2>
       <p class="text-xs text-neutral-400 mb-4 max-w-sm">
-        Logged in as <span id="unauthorizedEmail" class="font-mono text-neutral-300"></span>. This account does not have permission to view these messages.
+        Logged in as <span id="unauthorizedEmail" class="font-mono text-neutral-300 font-medium"></span>. This account cannot read private messages.
       </p>
       <button id="switchUserBtn" class="text-xs underline text-neutral-400 hover:text-white">Sign out and switch account</button>
     </div>
 
-    <!-- Authorized Inbox View -->
+    <!-- Main View -->
     <div id="inboxView" class="hidden flex flex-col flex-1">
       
-      <!-- Obsidian Tab Switcher: INBOX vs ARCHIVES -->
-      <div class="w-full flex items-center justify-between mb-4">
-        <div class="flex p-1 bg-[#161821] border border-neutral-800/80 rounded-2xl space-x-1">
-          <button
-            id="tabInboxBtn"
-            class="px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2"
-          >
-            <span>INBOX</span>
-            <span id="inboxBadge" class="bg-indigo-600/60 text-[10px] text-white px-2 py-0.5 rounded-full font-sans">0</span>
+      <!-- Thread View Back Button (When inside a thread) -->
+      <div id="threadHeader" class="hidden items-center justify-between p-3 bg-[#13151c] border border-neutral-800 rounded-2xl mb-4">
+        <div class="flex items-center space-x-3">
+          <button id="backToThreadsBtn" class="p-2 rounded-xl bg-neutral-800/80 hover:bg-neutral-700 text-neutral-200 transition">
+            <i data-lucide="arrow-left" class="w-4 h-4"></i>
           </button>
-          <button
-            id="tabArchiveBtn"
-            class="px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2"
-          >
-            <span>ARCHIVES</span>
-            <span id="archiveBadge" class="bg-neutral-800 text-[10px] text-neutral-400 px-2 py-0.5 rounded-full font-sans">0</span>
+          <div>
+            <h2 id="activeThreadName" class="text-sm font-bold text-white"></h2>
+            <p id="activeThreadSender" class="text-xs text-neutral-400 font-mono"></p>
+          </div>
+        </div>
+        <span id="activeThreadBadge" class="text-[11px] font-mono text-neutral-400 px-2.5 py-1 rounded-full bg-neutral-800 border border-neutral-700/60"></span>
+      </div>
+
+      <!-- Controls: Tabs + Search (Visible in thread list mode) -->
+      <div id="threadListControls" class="flex flex-col space-y-3 mb-4">
+        <div class="w-full flex items-center justify-between">
+          <!-- Segmented Tab Switcher: INBOX vs ARCHIVES -->
+          <div class="flex p-1 bg-[#13151c] border border-neutral-800 rounded-xl space-x-1">
+            <button
+              id="tabInboxBtn"
+              class="px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2"
+            >
+              <i data-lucide="inbox" class="w-3.5 h-3.5"></i>
+              <span>INBOX</span>
+              <span id="inboxBadge" class="bg-indigo-600/70 text-[10px] text-white px-2 py-0.2 rounded-full font-sans">0</span>
+            </button>
+            <button
+              id="tabArchiveBtn"
+              class="px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2"
+            >
+              <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+              <span>ARCHIVES</span>
+              <span id="archiveBadge" class="bg-neutral-800 text-[10px] text-neutral-400 px-2 py-0.2 rounded-full font-sans">0</span>
+            </button>
+          </div>
+
+          <button id="refreshBtn" title="Refresh messages" class="p-2 bg-[#13151c] border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition">
+            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
           </button>
         </div>
 
-        <button id="refreshBtn" title="Refresh messages" class="p-2.5 bg-[#161821] border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition">
-          🔄
-        </button>
-      </div>
-
-      <!-- Search Bar -->
-      <div class="relative w-full mb-4">
-        <input
-          id="searchInput"
-          type="text"
-          placeholder="Search messages, OTPs, or senders..."
-          class="w-full bg-[#161821] border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-        />
-        <span class="absolute left-3.5 top-2.5 text-neutral-500 text-sm">🔍</span>
-      </div>
-
-      <!-- Live Message Feed -->
-      <div id="messageList" class="flex flex-col space-y-3 custom-scrollbar overflow-y-auto">
-        <div class="text-center py-16 text-neutral-500 text-sm">
-          Loading messages...
+        <!-- Search Bar -->
+        <div class="relative w-full">
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Search contacts, messages, OTPs..."
+            class="w-full bg-[#13151c] border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+          />
+          <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-3 text-neutral-500"></i>
         </div>
       </div>
+
+      <!-- Threads List Feed -->
+      <div id="threadList" class="flex flex-col space-y-2.5 custom-scrollbar overflow-y-auto">
+        <div class="text-center py-16 text-neutral-500 text-xs flex flex-col items-center space-y-2">
+          <i data-lucide="loader-2" class="w-5 h-5 animate-spin text-indigo-400"></i>
+          <span>Connecting to Firestore...</span>
+        </div>
+      </div>
+
+      <!-- Messages Feed (Inside active thread) -->
+      <div id="messageHistoryList" class="hidden flex flex-col space-y-3 custom-scrollbar overflow-y-auto"></div>
     </div>
   </main>
 
@@ -143,7 +180,7 @@
       onSnapshot 
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // Load Firebase config dynamically from Hosting reserved endpoint (avoids hardcoding keys in repo)
+    // Dynamic config loader from Firebase Hosting
     let firebaseConfig = null;
     try {
       const resp = await fetch("/__/firebase/init.json");
@@ -167,12 +204,21 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
 
+    // Elements
     const userStatus = document.getElementById("userStatus");
     const authBtn = document.getElementById("authBtn");
+    const authBtnText = document.getElementById("authBtnText");
     const loggedOutView = document.getElementById("loggedOutView");
     const unauthorizedView = document.getElementById("unauthorizedView");
     const inboxView = document.getElementById("inboxView");
-    const messageList = document.getElementById("messageList");
+    const threadList = document.getElementById("threadList");
+    const messageHistoryList = document.getElementById("messageHistoryList");
+    const threadListControls = document.getElementById("threadListControls");
+    const threadHeader = document.getElementById("threadHeader");
+    const backToThreadsBtn = document.getElementById("backToThreadsBtn");
+    const activeThreadName = document.getElementById("activeThreadName");
+    const activeThreadSender = document.getElementById("activeThreadSender");
+    const activeThreadBadge = document.getElementById("activeThreadBadge");
     const searchInput = document.getElementById("searchInput");
     const loginWithGoogleBtn = document.getElementById("loginWithGoogleBtn");
     const switchUserBtn = document.getElementById("switchUserBtn");
@@ -184,32 +230,58 @@
 
     let allMessages = [];
     let currentTab = "INBOX"; // "INBOX" or "ARCHIVE"
+    let activeThreadKey = null; // null if viewing threads list
     let unsubscribeFirestore = null;
 
-    // Tab Switching
+    function renderIcons() {
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    }
+
+    // Helper to generate conversation key matching Android app SmsAddress.kt
+    function getConversationKey(msg) {
+      if (msg.conversationKey) return msg.conversationKey;
+      const sender = (msg.sender || "").trim();
+      const digits = sender.replace(/\D/g, "");
+      if (digits.length >= 10) {
+        return "phone:" + digits.slice(-10);
+      }
+      return "sender:" + sender.toLowerCase();
+    }
+
+    // Tab buttons
     tabInboxBtn.addEventListener("click", () => {
       currentTab = "INBOX";
+      activeThreadKey = null;
       updateTabUI();
-      renderMessages();
+      renderThreads();
     });
 
     tabArchiveBtn.addEventListener("click", () => {
       currentTab = "ARCHIVE";
+      activeThreadKey = null;
       updateTabUI();
-      renderMessages();
+      renderThreads();
+    });
+
+    backToThreadsBtn.addEventListener("click", () => {
+      activeThreadKey = null;
+      renderThreads();
     });
 
     function updateTabUI() {
       if (currentTab === "INBOX") {
-        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
-        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+        tabInboxBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
+        tabArchiveBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
       } else {
-        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
-        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+        tabArchiveBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
+        tabInboxBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
       }
+      renderIcons();
     }
 
-    // Login Action
+    // Auth actions
     const doLogin = async () => {
       try {
         const provider = new GoogleAuthProvider();
@@ -219,7 +291,6 @@
       }
     };
 
-    // Logout Action
     const doLogout = async () => {
       if (unsubscribeFirestore) {
         unsubscribeFirestore();
@@ -229,11 +300,8 @@
     };
 
     authBtn.addEventListener("click", () => {
-      if (auth.currentUser) {
-        doLogout();
-      } else {
-        doLogin();
-      }
+      if (auth.currentUser) doLogout();
+      else doLogin();
     });
 
     loginWithGoogleBtn.addEventListener("click", doLogin);
@@ -245,109 +313,241 @@
     });
 
     searchInput.addEventListener("input", () => {
-      renderMessages();
+      if (activeThreadKey) renderThreadMessages(activeThreadKey);
+      else renderThreads();
     });
 
     onAuthStateChanged(auth, (user) => {
       authBtn.classList.remove("hidden");
 
       if (!user) {
-        userStatus.textContent = "Not signed in";
-        authBtn.textContent = "Sign In";
+        userStatus.textContent = "";
+        authBtnText.textContent = "Sign In";
         loggedOutView.classList.remove("hidden");
         unauthorizedView.classList.add("hidden");
         inboxView.classList.add("hidden");
         if (unsubscribeFirestore) unsubscribeFirestore();
+        renderIcons();
         return;
       }
 
       if (user.email !== AUTHORIZED_EMAIL) {
         userStatus.textContent = user.email;
-        authBtn.textContent = "Sign Out";
+        authBtnText.textContent = "Sign Out";
         document.getElementById("unauthorizedEmail").textContent = user.email;
         loggedOutView.classList.add("hidden");
         unauthorizedView.classList.remove("hidden");
         inboxView.classList.add("hidden");
         if (unsubscribeFirestore) unsubscribeFirestore();
+        renderIcons();
         return;
       }
 
-      // Authorized User
+      // Authorized
       userStatus.textContent = user.email;
-      authBtn.textContent = "Sign Out";
+      authBtnText.textContent = "Sign Out";
       loggedOutView.classList.add("hidden");
       unauthorizedView.classList.add("hidden");
       inboxView.classList.remove("hidden");
 
+      renderIcons();
       listenForMessages();
     });
 
     function formatTime(timestamp) {
       if (!timestamp) return "";
       const d = new Date(timestamp);
-      return d.toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-      });
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      if (isToday) {
+        return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return d.toLocaleDateString([], { month: "short", day: "numeric" });
     }
 
-    function renderMessages() {
+    function formatDetailTime(timestamp) {
+      if (!timestamp) return "";
+      const d = new Date(timestamp);
+      return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+
+    // Group raw messages into thread objects
+    function computeThreads() {
+      const threadMap = new Map();
+
+      for (const msg of allMessages) {
+        const key = getConversationKey(msg);
+        if (!threadMap.has(key)) {
+          threadMap.set(key, {
+            key: key,
+            sender: msg.sender || "Unknown",
+            contactName: msg.contactName || null,
+            isArchived: !!msg.isArchived,
+            messages: []
+          });
+        }
+        const thread = threadMap.get(key);
+        // If newer message has contact name, use it
+        if (!thread.contactName && msg.contactName) {
+          thread.contactName = msg.contactName;
+        }
+        thread.messages.push(msg);
+      }
+
+      const threads = Array.from(threadMap.values());
+      // Sort messages within thread chronologically ascending
+      for (const t of threads) {
+        t.messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        t.latestMessage = t.messages[t.messages.length - 1];
+        t.timestamp = t.latestMessage ? t.latestMessage.timestamp : 0;
+      }
+
+      // Sort threads by latest message descending
+      threads.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      return threads;
+    }
+
+    function renderThreads() {
+      // Toggle views
+      threadHeader.classList.add("hidden");
+      threadListControls.classList.remove("hidden");
+      messageHistoryList.classList.add("hidden");
+      threadList.classList.remove("hidden");
+
+      const threads = computeThreads();
       const filter = searchInput.value.toLowerCase().trim();
 
-      // Update badge counts
-      const inboxTotal = allMessages.filter(m => !m.isArchived).length;
-      const archiveTotal = allMessages.filter(m => m.isArchived).length;
-      inboxBadge.textContent = inboxTotal;
-      archiveBadge.textContent = archiveTotal;
+      // Update Tab Badges
+      const inboxThreads = threads.filter(t => !t.isArchived);
+      const archiveThreads = threads.filter(t => t.isArchived);
+      inboxBadge.textContent = inboxThreads.length;
+      archiveBadge.textContent = archiveThreads.length;
 
-      // Filter by active tab (INBOX vs ARCHIVE)
-      let tabMessages = allMessages.filter(m => {
-        if (currentTab === "INBOX") {
-          return !m.isArchived;
-        } else {
-          return !!m.isArchived;
-        }
-      });
+      // Filter by active tab
+      let visibleThreads = (currentTab === "INBOX") ? inboxThreads : archiveThreads;
 
-      // Filter by search query
-      const filtered = tabMessages.filter(m => {
-        if (!filter) return true;
-        return (m.sender && m.sender.toLowerCase().includes(filter)) ||
-               (m.body && m.body.toLowerCase().includes(filter));
-      });
+      // Filter by search
+      if (filter) {
+        visibleThreads = visibleThreads.filter(t => {
+          const name = (t.contactName || "").toLowerCase();
+          const sender = (t.sender || "").toLowerCase();
+          const hasBody = t.messages.some(m => (m.body || "").toLowerCase().includes(filter));
+          return name.includes(filter) || sender.includes(filter) || hasBody;
+        });
+      }
 
-      if (filtered.length === 0) {
-        messageList.innerHTML = `
-          <div class="text-center py-16 text-neutral-500 text-sm">
-            ${allMessages.length === 0 ? "No SMS messages synced yet. Click 'Sync to Cloud' in the app to sync your history." : (filter ? "No messages matching search." : `No messages in ${currentTab.toLowerCase()}.`)}
+      if (visibleThreads.length === 0) {
+        threadList.innerHTML = `
+          <div class="text-center py-16 text-neutral-500 text-xs flex flex-col items-center space-y-2">
+            <i data-lucide="inbox" class="w-8 h-8 text-neutral-600"></i>
+            <span>${filter ? "No conversations match your search." : `No conversations in ${currentTab.toLowerCase()}.`}</span>
           </div>
         `;
+        renderIcons();
         return;
       }
 
-      messageList.innerHTML = filtered.map(msg => {
-        const isOtp = msg.isOtp;
-        const isSent = msg.type === 2;
+      threadList.innerHTML = visibleThreads.map(t => {
+        const displayName = t.contactName || t.sender;
+        const subText = t.contactName ? t.sender : "";
+        const latest = t.latestMessage || {};
+        const count = t.messages.length;
+        const snippet = latest.body || "";
+        const isOtp = latest.isOtp;
+
         return `
-          <div class="bg-neutral-900/60 hover:bg-neutral-900/90 border border-neutral-800 rounded-2xl p-4 transition duration-150">
-            <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center space-x-2">
-                <span class="font-bold text-sm text-neutral-100">${escapeHtml(msg.sender || "Unknown")}</span>
-                ${isSent ? `<span class="bg-neutral-800 text-neutral-400 border border-neutral-700 text-[10px] font-semibold px-2 py-0.5 rounded-full">SENT</span>` : ""}
-                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-semibold px-2 py-0.5 rounded-full">OTP</span>` : ""}
+          <div data-thread-key="${t.key}" class="thread-card bg-[#13151c] border border-neutral-800/80 rounded-2xl p-3.5 cursor-pointer flex items-center justify-between space-x-3">
+            <div class="flex items-center space-x-3 flex-1 min-w-0">
+              <div class="w-10 h-10 rounded-xl bg-neutral-800/80 flex items-center justify-center font-bold text-sm text-indigo-300 border border-neutral-700/60 shrink-0">
+                ${escapeHtml(displayName.charAt(0).toUpperCase())}
               </div>
-              <span class="text-xs text-neutral-500 font-mono">${formatTime(msg.timestamp)}</span>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between mb-0.5">
+                  <div class="flex items-center space-x-2 truncate">
+                    <span class="font-bold text-xs text-neutral-100 truncate">${escapeHtml(displayName)}</span>
+                    ${count > 1 ? `<span class="text-[10px] text-neutral-400 font-mono">(${count})</span>` : ""}
+                    ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[9px] font-semibold px-1.5 py-0.2 rounded-full">OTP</span>` : ""}
+                  </div>
+                  <span class="text-[10px] text-neutral-500 font-mono shrink-0">${formatTime(t.timestamp)}</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  ${subText ? `<span class="text-[10px] text-neutral-500 font-mono shrink-0">${escapeHtml(subText)} •</span>` : ""}
+                  <p class="text-xs text-neutral-400 truncate font-normal">${escapeHtml(snippet)}</p>
+                </div>
+              </div>
             </div>
-            <p class="text-sm text-neutral-300 leading-relaxed whitespace-pre-wrap select-text font-normal">${escapeHtml(msg.body || "")}</p>
+            <i data-lucide="chevron-right" class="w-4 h-4 text-neutral-600 shrink-0"></i>
           </div>
         `;
       }).join("");
+
+      // Add click listeners to open thread
+      threadList.querySelectorAll(".thread-card").forEach(el => {
+        el.addEventListener("click", () => {
+          const key = el.getAttribute("data-thread-key");
+          openThread(key);
+        });
+      });
+
+      renderIcons();
+    }
+
+    function openThread(threadKey) {
+      activeThreadKey = threadKey;
+      renderThreadMessages(threadKey);
+    }
+
+    function renderThreadMessages(threadKey) {
+      const threads = computeThreads();
+      const thread = threads.find(t => t.key === threadKey);
+      if (!thread) {
+        renderThreads();
+        return;
+      }
+
+      threadListControls.classList.add("hidden");
+      threadList.classList.add("hidden");
+      threadHeader.classList.remove("hidden");
+      messageHistoryList.classList.remove("hidden");
+
+      const displayName = thread.contactName || thread.sender;
+      activeThreadName.textContent = displayName;
+      activeThreadSender.textContent = thread.sender;
+      activeThreadBadge.textContent = `${thread.messages.length} messages`;
+
+      const filter = searchInput.value.toLowerCase().trim();
+      let messages = thread.messages;
+      if (filter) {
+        messages = messages.filter(m => (m.body || "").toLowerCase().includes(filter));
+      }
+
+      messageHistoryList.innerHTML = messages.map(msg => {
+        const isSent = msg.type === 2;
+        const isOtp = msg.isOtp;
+        return `
+          <div class="flex flex-col ${isSent ? "items-end" : "items-start"}">
+            <div class="max-w-[85%] rounded-2xl p-3.5 border ${
+              isSent 
+                ? "bg-indigo-950/40 border-indigo-900/50 text-indigo-100" 
+                : "bg-[#13151c] border-neutral-800 text-neutral-200"
+            }">
+              <div class="flex items-center space-x-2 mb-1.5">
+                <span class="text-[10px] font-mono text-neutral-500">${formatDetailTime(msg.timestamp)}</span>
+                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[9px] font-semibold px-1.5 py-0.2 rounded-full">OTP</span>` : ""}
+              </div>
+              <p class="text-xs leading-relaxed whitespace-pre-wrap select-text">${escapeHtml(msg.body || "")}</p>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      // Auto scroll to bottom of conversation
+      messageHistoryList.scrollTop = messageHistoryList.scrollHeight;
+      renderIcons();
     }
 
     function escapeHtml(str) {
-      return str.replace(/[&<>'"]/g, 
+      return (str || "").replace(/[&<>'"]/g, 
         tag => ({
           '&': '&amp;',
           '<': '&lt;',
@@ -360,13 +560,11 @@
 
     function listenForMessages() {
       if (unsubscribeFirestore) unsubscribeFirestore();
-      
-      messageList.innerHTML = `<div class="text-center py-16 text-neutral-500 text-sm">Connecting to Firestore...</div>`;
 
       const q = query(
         collection(db, "sms"),
         orderBy("timestamp", "desc"),
-        limit(500)
+        limit(1000)
       );
 
       unsubscribeFirestore = onSnapshot(q, (snapshot) => {
@@ -374,14 +572,19 @@
         snapshot.forEach((doc) => {
           allMessages.push({ id: doc.id, ...doc.data() });
         });
-        renderMessages();
+        if (activeThreadKey) {
+          renderThreadMessages(activeThreadKey);
+        } else {
+          renderThreads();
+        }
       }, (err) => {
         console.error("Firestore listener error:", err);
-        messageList.innerHTML = `
+        threadList.innerHTML = `
           <div class="p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-xs text-red-400">
             Failed to fetch messages: ${err.message}
           </div>
         `;
+        renderIcons();
       });
     }
   </script>

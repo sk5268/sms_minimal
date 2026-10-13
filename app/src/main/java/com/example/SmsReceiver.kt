@@ -197,15 +197,18 @@ class SmsReceiver : BroadcastReceiver() {
         // Sync incoming SMS to Cloud Firestore
         try {
             FirestoreSyncHelper.syncMessage(
+                context = context,
                 sender = sender,
                 body = body,
                 timestamp = timestamp,
                 isOtp = (otp != null),
-                messageId = messageId
+                messageId = messageId,
+                threadId = threadId
             )
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
 
 
         var debitId: Long? = null
