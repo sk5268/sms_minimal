@@ -1201,6 +1201,8 @@ fun MainThreadsScreen(
         else -> 2
     }) { 3 }
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
 
     // Sync pager state changes (from swipe) to activeTab only when settled
     LaunchedEffect(pagerState) {
@@ -1383,9 +1385,37 @@ fun MainThreadsScreen(
                                 onOpenCycleDateDialog()
                             }
                         )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Sync to Cloud",
+                                    color = AccentGreen,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            onClick = {
+                                expanded = false
+                                Toast.makeText(context, "Starting historic SMS sync...", Toast.LENGTH_SHORT).show()
+                                coroutineScope.launch {
+                                    FirestoreSyncHelper.syncAllHistoricMessages(
+                                        context = context,
+                                        onProgress = { synced, total ->
+                                            if (synced % 250 == 0 || synced == total) {
+                                                Toast.makeText(context, "Syncing to Cloud: $synced/$total", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onComplete = { totalSynced ->
+                                            Toast.makeText(context, "Synced $totalSynced messages to Cloud!", Toast.LENGTH_LONG).show()
+                                        }
+                                    )
+                                }
+                            }
+                        )
                     }
                 }
             }
+
 
             Spacer(modifier = Modifier.height(18.dp))
 

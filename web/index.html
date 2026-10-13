@@ -24,7 +24,7 @@
 <body class="min-h-screen flex flex-col items-center p-4 selection:bg-indigo-500 selection:text-white">
 
   <!-- Header -->
-  <header class="w-full max-w-3xl flex items-center justify-between py-4 border-b border-neutral-800 mb-6">
+  <header class="w-full max-w-3xl flex items-center justify-between py-4 border-b border-neutral-800 mb-5">
     <div class="flex items-center space-x-3">
       <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">
         ✉
@@ -79,20 +79,40 @@
 
     <!-- Authorized Inbox View -->
     <div id="inboxView" class="hidden flex flex-col flex-1">
-      <!-- Search & Controls -->
-      <div class="flex items-center space-x-3 mb-4">
-        <div class="relative flex-1">
-          <input
-            id="searchInput"
-            type="text"
-            placeholder="Search messages, OTPs, or senders..."
-            class="w-full bg-neutral-900/80 border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-          />
-          <span class="absolute left-3.5 top-2.5 text-neutral-500 text-sm">🔍</span>
+      
+      <!-- Obsidian Tab Switcher: INBOX vs ARCHIVES -->
+      <div class="w-full flex items-center justify-between mb-4">
+        <div class="flex p-1 bg-[#161821] border border-neutral-800/80 rounded-2xl space-x-1">
+          <button
+            id="tabInboxBtn"
+            class="px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2"
+          >
+            <span>INBOX</span>
+            <span id="inboxBadge" class="bg-indigo-600/60 text-[10px] text-white px-2 py-0.5 rounded-full font-sans">0</span>
+          </button>
+          <button
+            id="tabArchiveBtn"
+            class="px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2"
+          >
+            <span>ARCHIVES</span>
+            <span id="archiveBadge" class="bg-neutral-800 text-[10px] text-neutral-400 px-2 py-0.5 rounded-full font-sans">0</span>
+          </button>
         </div>
-        <button id="refreshBtn" title="Refresh messages" class="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-400 hover:text-white hover:bg-neutral-800 transition">
+
+        <button id="refreshBtn" title="Refresh messages" class="p-2.5 bg-[#161821] border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition">
           🔄
         </button>
+      </div>
+
+      <!-- Search Bar -->
+      <div class="relative w-full mb-4">
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="Search messages, OTPs, or senders..."
+          class="w-full bg-[#161821] border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+        />
+        <span class="absolute left-3.5 top-2.5 text-neutral-500 text-sm">🔍</span>
       </div>
 
       <!-- Live Message Feed -->
@@ -135,7 +155,6 @@
     }
 
     if (!firebaseConfig) {
-      // Fallback relative config if needed
       firebaseConfig = {
         projectId: "sms-minimal",
         authDomain: "sms-minimal.firebaseapp.com"
@@ -148,7 +167,6 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-
     const userStatus = document.getElementById("userStatus");
     const authBtn = document.getElementById("authBtn");
     const loggedOutView = document.getElementById("loggedOutView");
@@ -159,9 +177,37 @@
     const loginWithGoogleBtn = document.getElementById("loginWithGoogleBtn");
     const switchUserBtn = document.getElementById("switchUserBtn");
     const refreshBtn = document.getElementById("refreshBtn");
+    const tabInboxBtn = document.getElementById("tabInboxBtn");
+    const tabArchiveBtn = document.getElementById("tabArchiveBtn");
+    const inboxBadge = document.getElementById("inboxBadge");
+    const archiveBadge = document.getElementById("archiveBadge");
 
     let allMessages = [];
+    let currentTab = "INBOX"; // "INBOX" or "ARCHIVE"
     let unsubscribeFirestore = null;
+
+    // Tab Switching
+    tabInboxBtn.addEventListener("click", () => {
+      currentTab = "INBOX";
+      updateTabUI();
+      renderMessages();
+    });
+
+    tabArchiveBtn.addEventListener("click", () => {
+      currentTab = "ARCHIVE";
+      updateTabUI();
+      renderMessages();
+    });
+
+    function updateTabUI() {
+      if (currentTab === "INBOX") {
+        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
+        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+      } else {
+        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
+        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+      }
+    }
 
     // Login Action
     const doLogin = async () => {
@@ -198,8 +244,8 @@
       }
     });
 
-    searchInput.addEventListener("input", (e) => {
-      renderMessages(allMessages, e.target.value.toLowerCase());
+    searchInput.addEventListener("input", () => {
+      renderMessages();
     });
 
     onAuthStateChanged(auth, (user) => {
@@ -247,8 +293,26 @@
       });
     }
 
-    function renderMessages(messages, filter = "") {
-      const filtered = messages.filter(m => {
+    function renderMessages() {
+      const filter = searchInput.value.toLowerCase().trim();
+
+      // Update badge counts
+      const inboxTotal = allMessages.filter(m => !m.isArchived).length;
+      const archiveTotal = allMessages.filter(m => m.isArchived).length;
+      inboxBadge.textContent = inboxTotal;
+      archiveBadge.textContent = archiveTotal;
+
+      // Filter by active tab (INBOX vs ARCHIVE)
+      let tabMessages = allMessages.filter(m => {
+        if (currentTab === "INBOX") {
+          return !m.isArchived;
+        } else {
+          return !!m.isArchived;
+        }
+      });
+
+      // Filter by search query
+      const filtered = tabMessages.filter(m => {
         if (!filter) return true;
         return (m.sender && m.sender.toLowerCase().includes(filter)) ||
                (m.body && m.body.toLowerCase().includes(filter));
@@ -257,7 +321,7 @@
       if (filtered.length === 0) {
         messageList.innerHTML = `
           <div class="text-center py-16 text-neutral-500 text-sm">
-            ${messages.length === 0 ? "No SMS messages synced yet. Incoming SMS will appear here automatically." : "No messages matching search."}
+            ${allMessages.length === 0 ? "No SMS messages synced yet. Click 'Sync to Cloud' in the app to sync your history." : (filter ? "No messages matching search." : `No messages in ${currentTab.toLowerCase()}.`)}
           </div>
         `;
         return;
@@ -265,11 +329,13 @@
 
       messageList.innerHTML = filtered.map(msg => {
         const isOtp = msg.isOtp;
+        const isSent = msg.type === 2;
         return `
           <div class="bg-neutral-900/60 hover:bg-neutral-900/90 border border-neutral-800 rounded-2xl p-4 transition duration-150">
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center space-x-2">
                 <span class="font-bold text-sm text-neutral-100">${escapeHtml(msg.sender || "Unknown")}</span>
+                ${isSent ? `<span class="bg-neutral-800 text-neutral-400 border border-neutral-700 text-[10px] font-semibold px-2 py-0.5 rounded-full">SENT</span>` : ""}
                 ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-semibold px-2 py-0.5 rounded-full">OTP</span>` : ""}
               </div>
               <span class="text-xs text-neutral-500 font-mono">${formatTime(msg.timestamp)}</span>
@@ -300,7 +366,7 @@
       const q = query(
         collection(db, "sms"),
         orderBy("timestamp", "desc"),
-        limit(200)
+        limit(500)
       );
 
       unsubscribeFirestore = onSnapshot(q, (snapshot) => {
@@ -308,7 +374,7 @@
         snapshot.forEach((doc) => {
           allMessages.push({ id: doc.id, ...doc.data() });
         });
-        renderMessages(allMessages, searchInput.value.toLowerCase());
+        renderMessages();
       }, (err) => {
         console.error("Firestore listener error:", err);
         messageList.innerHTML = `
