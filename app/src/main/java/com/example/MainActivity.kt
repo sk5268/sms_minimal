@@ -1405,13 +1405,18 @@ fun MainThreadsScreen(
                                                 Toast.makeText(context, "Syncing to Cloud: $synced/$total", Toast.LENGTH_SHORT).show()
                                             }
                                         },
-                                        onComplete = { totalSynced ->
-                                            Toast.makeText(context, "Synced $totalSynced messages to Cloud!", Toast.LENGTH_LONG).show()
+                                        onComplete = { totalSynced, errorMsg ->
+                                            if (errorMsg != null) {
+                                                Toast.makeText(context, "Sync failed: $errorMsg", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(context, "Synced $totalSynced messages to Cloud!", Toast.LENGTH_LONG).show()
+                                            }
                                         }
                                     )
                                 }
                             }
                         )
+
                     }
                 }
             }

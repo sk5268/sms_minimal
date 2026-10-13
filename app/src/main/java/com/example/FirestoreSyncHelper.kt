@@ -81,7 +81,7 @@ object FirestoreSyncHelper {
     suspend fun syncAllHistoricMessages(
         context: Context,
         onProgress: (synced: Int, total: Int) -> Unit = { _, _ -> },
-        onComplete: (totalSynced: Int) -> Unit = {}
+        onComplete: (totalSynced: Int, errorMsg: String?) -> Unit = { _, _ -> }
     ) = withContext(Dispatchers.IO) {
         val auth = FirebaseAuth.getInstance()
         if (auth.currentUser == null) {
@@ -89,10 +89,11 @@ object FirestoreSyncHelper {
                 com.google.android.gms.tasks.Tasks.await(auth.signInAnonymously())
             } catch (e: Exception) {
                 Log.e(TAG, "Auth failed during bulk sync", e)
-                withContext(Dispatchers.Main) { onComplete(0) }
+                withContext(Dispatchers.Main) { onComplete(0, "Auth error: ${e.localizedMessage}") }
                 return@withContext
             }
         }
+
 
         val archivedIds = ArchiveManager(context).getArchivedThreadIds()
         val deletedManager = DeleteManager(context)
@@ -168,7 +169,7 @@ object FirestoreSyncHelper {
         val db = FirebaseFirestore.getInstance()
         var count = 0
 
-        // Batch upload in chunks of 250 (Firestore limit is 500 per batch)
+        var lastError: String? = null
         val chunks = messagesToSync.chunked(250)
         for (chunk in chunks) {
             val batch = db.batch()
@@ -186,11 +187,13 @@ object FirestoreSyncHelper {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error committing batch sync", e)
+                lastError = e.localizedMessage
             }
         }
 
         withContext(Dispatchers.Main) {
-            onComplete(count)
+            onComplete(count, lastError)
         }
     }
 }
+
