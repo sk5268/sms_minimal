@@ -5,52 +5,60 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SMS Lite - Cloud Viewer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20width=%22100%22%20height=%22100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%236366f1%22/><path d=%22M25 35h50v30H45L30 75V35z%22 fill=%22white%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
     body {
       background-color: #0b0c10;
-      color: #e5e7eb;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #f1f3f7;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .font-mono-clean {
+      font-family: 'JetBrains Mono', monospace;
     }
     .custom-scrollbar::-webkit-scrollbar {
       width: 5px;
     }
     .custom-scrollbar::-webkit-scrollbar-thumb {
-      background-color: #262626;
+      background-color: #272a34;
       border-radius: 4px;
     }
     .thread-card {
       transition: all 0.15s ease-in-out;
     }
     .thread-card:hover {
-      background-color: #15171f;
-      border-color: #272a38;
+      background-color: #171923;
+      border-color: #2b3040;
     }
   </style>
 </head>
-<body class="min-h-screen flex flex-col items-center p-3 sm:p-5 selection:bg-indigo-500 selection:text-white">
+<body class="min-h-screen flex flex-col items-center p-3 sm:p-6 selection:bg-indigo-600 selection:text-white">
 
   <!-- Header -->
-  <header class="w-full max-w-3xl flex items-center justify-between py-3.5 border-b border-neutral-800/80 mb-4">
-    <div class="flex items-center space-x-3">
-      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+  <header class="w-full max-w-3xl flex items-center justify-between py-4 border-b border-neutral-800/80 mb-5">
+    <div class="flex items-center space-x-3.5">
+      <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/25">
         <i data-lucide="message-square" class="w-5 h-5"></i>
       </div>
       <div>
-        <h1 class="text-lg font-bold tracking-tight text-white flex items-center space-x-2">
+        <h1 class="text-xl font-extrabold tracking-tight text-white flex items-center space-x-2.5">
           <span>SMS Lite</span>
-          <span class="text-[10px] font-mono tracking-wider px-2 py-0.5 rounded-full bg-indigo-950/80 text-indigo-400 border border-indigo-800/50">WEB</span>
+          <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-950/80 text-indigo-400 border border-indigo-800/60 font-mono-clean">CLOUD</span>
         </h1>
-        <p class="text-xs text-neutral-400">Personal SMS Cloud Viewer</p>
+        <p class="text-xs text-neutral-400 font-medium">Personal SMS Cloud Viewer</p>
       </div>
     </div>
     
     <div id="authContainer" class="flex items-center space-x-3">
-      <span id="userStatus" class="text-xs text-neutral-500 font-mono hidden sm:inline"></span>
-      <button id="authBtn" class="hidden flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors border border-neutral-700">
-        <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+      <span id="userStatus" class="text-xs text-neutral-400 font-medium hidden sm:inline"></span>
+      <button id="authBtn" class="hidden flex items-center space-x-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-200 transition border border-neutral-700/70">
+        <i data-lucide="log-in" class="w-4 h-4"></i>
         <span id="authBtnText">Sign In</span>
       </button>
     </div>
@@ -60,15 +68,15 @@
   <main class="w-full max-w-3xl flex-1 flex flex-col">
 
     <!-- Unauthenticated State -->
-    <div id="loggedOutView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-neutral-900/40 rounded-2xl border border-neutral-800">
-      <div class="w-14 h-14 rounded-2xl bg-neutral-800/80 flex items-center justify-center text-neutral-300 mb-4 border border-neutral-700/50">
-        <i data-lucide="shield-alert" class="w-7 h-7 text-indigo-400"></i>
+    <div id="loggedOutView" class="hidden my-auto flex flex-col items-center justify-center p-8 sm:p-12 text-center bg-neutral-900/40 rounded-3xl border border-neutral-800">
+      <div class="w-16 h-16 rounded-2xl bg-neutral-800/80 flex items-center justify-center text-neutral-300 mb-4 border border-neutral-700/60 shadow-inner">
+        <i data-lucide="shield-check" class="w-8 h-8 text-indigo-400"></i>
       </div>
-      <h2 class="text-base font-semibold text-white mb-2">Private SMS Dashboard</h2>
-      <p class="text-xs text-neutral-400 max-w-sm mb-6 leading-relaxed">
-        Restricted to <span class="font-mono text-indigo-400 font-semibold">torasfk@gmail.com</span>. Sign in with your Google account to access your synced messages.
+      <h2 class="text-lg font-bold text-white mb-2 tracking-tight">Private SMS Portal</h2>
+      <p class="text-sm text-neutral-400 max-w-md mb-6 leading-relaxed">
+        Access is strictly restricted to <span class="font-semibold text-indigo-400">torasfk@gmail.com</span>. Sign in with your Google account to access your messages.
       </p>
-      <button id="loginWithGoogleBtn" class="flex items-center space-x-2.5 px-5 py-2.5 rounded-xl bg-white text-neutral-900 font-medium text-xs hover:bg-neutral-200 transition-all shadow-md">
+      <button id="loginWithGoogleBtn" class="flex items-center space-x-2.5 px-6 py-3 rounded-2xl bg-white text-neutral-900 font-bold text-sm hover:bg-neutral-200 transition-all shadow-lg shadow-white/5">
         <svg class="w-4 h-4" viewBox="0 0 24 24">
           <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
           <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -80,13 +88,13 @@
     </div>
 
     <!-- Access Denied State (Wrong account) -->
-    <div id="unauthorizedView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-red-950/20 rounded-2xl border border-red-900/40">
+    <div id="unauthorizedView" class="hidden my-auto flex flex-col items-center justify-center p-8 text-center bg-red-950/20 rounded-3xl border border-red-900/40">
       <div class="w-14 h-14 rounded-2xl bg-red-900/30 flex items-center justify-center text-red-400 mb-3 border border-red-800/40">
         <i data-lucide="ban" class="w-7 h-7"></i>
       </div>
-      <h2 class="text-sm font-semibold text-red-300 mb-1">Unauthorized Account</h2>
-      <p class="text-xs text-neutral-400 mb-4 max-w-sm">
-        Logged in as <span id="unauthorizedEmail" class="font-mono text-neutral-300 font-medium"></span>. This account cannot read private messages.
+      <h2 class="text-base font-bold text-red-300 mb-1">Unauthorized Account</h2>
+      <p class="text-sm text-neutral-400 mb-4 max-w-sm">
+        Logged in as <span id="unauthorizedEmail" class="text-neutral-200 font-semibold"></span>. This account does not have permission to view these messages.
       </p>
       <button id="switchUserBtn" class="text-xs underline text-neutral-400 hover:text-white">Sign out and switch account</button>
     </div>
@@ -94,44 +102,44 @@
     <!-- Main View -->
     <div id="inboxView" class="hidden flex flex-col flex-1">
       
-      <!-- Thread View Back Button (When inside a thread) -->
-      <div id="threadHeader" class="hidden items-center justify-between p-3 bg-[#13151c] border border-neutral-800 rounded-2xl mb-4">
+      <!-- Thread View Back Header (When inside a thread) -->
+      <div id="threadHeader" class="hidden items-center justify-between p-3.5 bg-[#14161f] border border-neutral-800 rounded-2xl mb-4">
         <div class="flex items-center space-x-3">
-          <button id="backToThreadsBtn" class="p-2 rounded-xl bg-neutral-800/80 hover:bg-neutral-700 text-neutral-200 transition">
+          <button id="backToThreadsBtn" class="p-2.5 rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-200 transition">
             <i data-lucide="arrow-left" class="w-4 h-4"></i>
           </button>
           <div>
-            <h2 id="activeThreadName" class="text-sm font-bold text-white"></h2>
-            <p id="activeThreadSender" class="text-xs text-neutral-400 font-mono"></p>
+            <h2 id="activeThreadName" class="text-base font-bold text-white tracking-tight"></h2>
+            <p id="activeThreadSender" class="text-xs text-neutral-400 font-mono-clean font-medium"></p>
           </div>
         </div>
-        <span id="activeThreadBadge" class="text-[11px] font-mono text-neutral-400 px-2.5 py-1 rounded-full bg-neutral-800 border border-neutral-700/60"></span>
+        <span id="activeThreadBadge" class="text-xs font-mono-clean text-neutral-400 px-3 py-1 rounded-full bg-neutral-800/90 border border-neutral-700/60 font-medium"></span>
       </div>
 
       <!-- Controls: Tabs + Search (Visible in thread list mode) -->
-      <div id="threadListControls" class="flex flex-col space-y-3 mb-4">
+      <div id="threadListControls" class="flex flex-col space-y-3.5 mb-4">
         <div class="w-full flex items-center justify-between">
           <!-- Segmented Tab Switcher: INBOX vs ARCHIVES -->
-          <div class="flex p-1 bg-[#13151c] border border-neutral-800 rounded-xl space-x-1">
+          <div class="flex p-1.5 bg-[#14161f] border border-neutral-800 rounded-2xl space-x-1.5">
             <button
               id="tabInboxBtn"
-              class="px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2"
+              class="px-5 py-2 rounded-xl text-xs font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2.5"
             >
-              <i data-lucide="inbox" class="w-3.5 h-3.5"></i>
+              <i data-lucide="inbox" class="w-4 h-4"></i>
               <span>INBOX</span>
-              <span id="inboxBadge" class="bg-indigo-600/70 text-[10px] text-white px-2 py-0.2 rounded-full font-sans">0</span>
+              <span id="inboxBadge" class="bg-indigo-600 text-xs font-bold text-white px-2.5 py-0.5 rounded-full font-sans">0</span>
             </button>
             <button
               id="tabArchiveBtn"
-              class="px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2"
+              class="px-5 py-2 rounded-xl text-xs font-bold tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2.5"
             >
-              <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+              <i data-lucide="archive" class="w-4 h-4"></i>
               <span>ARCHIVES</span>
-              <span id="archiveBadge" class="bg-neutral-800 text-[10px] text-neutral-400 px-2 py-0.2 rounded-full font-sans">0</span>
+              <span id="archiveBadge" class="bg-neutral-800 text-xs font-bold text-neutral-400 px-2.5 py-0.5 rounded-full font-sans">0</span>
             </button>
           </div>
 
-          <button id="refreshBtn" title="Refresh messages" class="p-2 bg-[#13151c] border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition">
+          <button id="refreshBtn" title="Refresh messages" class="p-2.5 bg-[#14161f] border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition">
             <i data-lucide="refresh-cw" class="w-4 h-4"></i>
           </button>
         </div>
@@ -141,23 +149,23 @@
           <input
             id="searchInput"
             type="text"
-            placeholder="Search contacts, messages, OTPs..."
-            class="w-full bg-[#13151c] border border-neutral-800 rounded-xl px-4 py-2.5 pl-10 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            placeholder="Search conversations, names, or messages..."
+            class="w-full bg-[#14161f] border border-neutral-800 rounded-2xl px-4 py-3 pl-11 text-sm text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
           />
-          <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-3 text-neutral-500"></i>
+          <i data-lucide="search" class="w-4 h-4 absolute left-4 top-3.5 text-neutral-500"></i>
         </div>
       </div>
 
       <!-- Threads List Feed -->
       <div id="threadList" class="flex flex-col space-y-2.5 custom-scrollbar overflow-y-auto">
-        <div class="text-center py-16 text-neutral-500 text-xs flex flex-col items-center space-y-2">
+        <div class="text-center py-16 text-neutral-500 text-sm flex flex-col items-center space-y-2.5">
           <i data-lucide="loader-2" class="w-5 h-5 animate-spin text-indigo-400"></i>
-          <span>Connecting to Firestore...</span>
+          <span>Loading messages...</span>
         </div>
       </div>
 
       <!-- Messages Feed (Inside active thread) -->
-      <div id="messageHistoryList" class="hidden flex flex-col space-y-3 custom-scrollbar overflow-y-auto"></div>
+      <div id="messageHistoryList" class="hidden flex flex-col space-y-3.5 custom-scrollbar overflow-y-auto"></div>
     </div>
   </main>
 
@@ -230,7 +238,7 @@
 
     let allMessages = [];
     let currentTab = "INBOX"; // "INBOX" or "ARCHIVE"
-    let activeThreadKey = null; // null if viewing threads list
+    let activeThreadKey = null;
     let unsubscribeFirestore = null;
 
     function renderIcons() {
@@ -272,11 +280,11 @@
 
     function updateTabUI() {
       if (currentTab === "INBOX") {
-        tabInboxBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
-        tabArchiveBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2.5";
+        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-bold tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2.5";
       } else {
-        tabArchiveBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2";
-        tabInboxBtn.className = "px-4 py-1.5 rounded-lg text-xs font-mono font-medium tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2";
+        tabArchiveBtn.className = "px-5 py-2 rounded-xl text-xs font-bold tracking-wider transition-all duration-150 bg-neutral-800 text-white shadow-sm flex items-center space-x-2.5";
+        tabInboxBtn.className = "px-5 py-2 rounded-xl text-xs font-bold tracking-wider text-neutral-400 hover:text-neutral-200 transition-all duration-150 flex items-center space-x-2.5";
       }
       renderIcons();
     }
@@ -382,12 +390,10 @@
             key: key,
             sender: msg.sender || "Unknown",
             contactName: msg.contactName || null,
-            isArchived: !!msg.isArchived,
             messages: []
           });
         }
         const thread = threadMap.get(key);
-        // If newer message has contact name, use it
         if (!thread.contactName && msg.contactName) {
           thread.contactName = msg.contactName;
         }
@@ -395,14 +401,19 @@
       }
 
       const threads = Array.from(threadMap.values());
-      // Sort messages within thread chronologically ascending
       for (const t of threads) {
         t.messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
         t.latestMessage = t.messages[t.messages.length - 1];
         t.timestamp = t.latestMessage ? t.latestMessage.timestamp : 0;
+        // A conversation is archived if ALL its messages are flagged as archived,
+        // or if the latest message is explicitly archived
+        t.isArchived = t.messages.length > 0 && t.messages.every(m => !!m.isArchived);
+        if (!t.isArchived && t.latestMessage && !!t.latestMessage.isArchived) {
+          t.isArchived = true;
+        }
       }
 
-      // Sort threads by latest message descending
+      // Sort threads by newest message descending
       threads.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
       return threads;
     }
@@ -438,9 +449,9 @@
 
       if (visibleThreads.length === 0) {
         threadList.innerHTML = `
-          <div class="text-center py-16 text-neutral-500 text-xs flex flex-col items-center space-y-2">
-            <i data-lucide="inbox" class="w-8 h-8 text-neutral-600"></i>
-            <span>${filter ? "No conversations match your search." : `No conversations in ${currentTab.toLowerCase()}.`}</span>
+          <div class="text-center py-20 text-neutral-500 text-sm flex flex-col items-center space-y-3">
+            <i data-lucide="inbox" class="w-9 h-9 text-neutral-600"></i>
+            <span class="font-medium">${filter ? "No conversations match your search." : `No conversations in ${currentTab.toLowerCase()}.`}</span>
           </div>
         `;
         renderIcons();
@@ -456,27 +467,27 @@
         const isOtp = latest.isOtp;
 
         return `
-          <div data-thread-key="${t.key}" class="thread-card bg-[#13151c] border border-neutral-800/80 rounded-2xl p-3.5 cursor-pointer flex items-center justify-between space-x-3">
-            <div class="flex items-center space-x-3 flex-1 min-w-0">
-              <div class="w-10 h-10 rounded-xl bg-neutral-800/80 flex items-center justify-center font-bold text-sm text-indigo-300 border border-neutral-700/60 shrink-0">
+          <div data-thread-key="${t.key}" class="thread-card bg-[#14161f] border border-neutral-800/80 rounded-2xl p-4 cursor-pointer flex items-center justify-between space-x-3.5">
+            <div class="flex items-center space-x-3.5 flex-1 min-w-0">
+              <div class="w-11 h-11 rounded-2xl bg-neutral-800 flex items-center justify-center font-bold text-base text-indigo-300 border border-neutral-700/60 shrink-0">
                 ${escapeHtml(displayName.charAt(0).toUpperCase())}
               </div>
               <div class="flex-1 min-w-0">
-                <div class="flex items-center justify-between mb-0.5">
+                <div class="flex items-center justify-between mb-1">
                   <div class="flex items-center space-x-2 truncate">
-                    <span class="font-bold text-xs text-neutral-100 truncate">${escapeHtml(displayName)}</span>
-                    ${count > 1 ? `<span class="text-[10px] text-neutral-400 font-mono">(${count})</span>` : ""}
-                    ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[9px] font-semibold px-1.5 py-0.2 rounded-full">OTP</span>` : ""}
+                    <span class="font-bold text-sm text-neutral-100 truncate">${escapeHtml(displayName)}</span>
+                    ${count > 1 ? `<span class="text-xs text-neutral-400 font-mono-clean font-medium">(${count})</span>` : ""}
+                    ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-clean">OTP</span>` : ""}
                   </div>
-                  <span class="text-[10px] text-neutral-500 font-mono shrink-0">${formatTime(t.timestamp)}</span>
+                  <span class="text-xs text-neutral-400 font-mono-clean shrink-0 font-medium">${formatTime(t.timestamp)}</span>
                 </div>
                 <div class="flex items-center space-x-2">
-                  ${subText ? `<span class="text-[10px] text-neutral-500 font-mono shrink-0">${escapeHtml(subText)} •</span>` : ""}
-                  <p class="text-xs text-neutral-400 truncate font-normal">${escapeHtml(snippet)}</p>
+                  ${subText ? `<span class="text-xs text-neutral-400 font-mono-clean shrink-0">${escapeHtml(subText)} •</span>` : ""}
+                  <p class="text-sm text-neutral-300 truncate font-normal leading-normal">${escapeHtml(snippet)}</p>
                 </div>
               </div>
             </div>
-            <i data-lucide="chevron-right" class="w-4 h-4 text-neutral-600 shrink-0"></i>
+            <i data-lucide="chevron-right" class="w-4 h-4 text-neutral-500 shrink-0"></i>
           </div>
         `;
       }).join("");
@@ -526,16 +537,16 @@
         const isOtp = msg.isOtp;
         return `
           <div class="flex flex-col ${isSent ? "items-end" : "items-start"}">
-            <div class="max-w-[85%] rounded-2xl p-3.5 border ${
+            <div class="max-w-[85%] rounded-2xl p-4 border ${
               isSent 
-                ? "bg-indigo-950/40 border-indigo-900/50 text-indigo-100" 
-                : "bg-[#13151c] border-neutral-800 text-neutral-200"
+                ? "bg-indigo-950/50 border-indigo-900/60 text-indigo-100" 
+                : "bg-[#14161f] border-neutral-800 text-neutral-200"
             }">
-              <div class="flex items-center space-x-2 mb-1.5">
-                <span class="text-[10px] font-mono text-neutral-500">${formatDetailTime(msg.timestamp)}</span>
-                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[9px] font-semibold px-1.5 py-0.2 rounded-full">OTP</span>` : ""}
+              <div class="flex items-center space-x-2.5 mb-2">
+                <span class="text-xs font-mono-clean text-neutral-400">${formatDetailTime(msg.timestamp)}</span>
+                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-clean">OTP</span>` : ""}
               </div>
-              <p class="text-xs leading-relaxed whitespace-pre-wrap select-text">${escapeHtml(msg.body || "")}</p>
+              <p class="text-sm leading-relaxed whitespace-pre-wrap select-text font-normal">${escapeHtml(msg.body || "")}</p>
             </div>
           </div>
         `;
@@ -580,7 +591,7 @@
       }, (err) => {
         console.error("Firestore listener error:", err);
         threadList.innerHTML = `
-          <div class="p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-xs text-red-400">
+          <div class="p-4 bg-red-950/30 border border-red-900/50 rounded-2xl text-xs text-red-400">
             Failed to fetch messages: ${err.message}
           </div>
         `;

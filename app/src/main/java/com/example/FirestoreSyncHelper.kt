@@ -132,12 +132,36 @@ object FirestoreSyncHelper {
             }
         }
 
-        val archivedIds = ArchiveManager(context).getArchivedThreadIds()
+        val archiveManager = ArchiveManager(context)
+        val prefArchivedIds = archiveManager.getArchivedThreadIds()
+        val prefUnarchivedIds = archiveManager.getUnarchivedThreadIds()
+
+        // Also query system-level archived threads from content://mms-sms/conversations
+        val systemArchivedIds = mutableSetOf<Long>()
+        try {
+            context.contentResolver.query(
+                android.net.Uri.parse("content://mms-sms/conversations?simple=true"),
+                arrayOf("_id", "archived"),
+                null, null, null
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndex("_id")
+                val archIndex = cursor.getColumnIndex("archived")
+                while (cursor.moveToNext()) {
+                    if (idIndex != -1 && archIndex != -1 && cursor.getInt(archIndex) == 1) {
+                        systemArchivedIds.add(cursor.getLong(idIndex))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val deletedManager = DeleteManager(context)
         val deletedIds = deletedManager.getDeletedThreads().keys
         val contactCache = mutableMapOf<String, String>()
 
         val messagesToSync = mutableListOf<Map<String, Any?>>()
+
 
         val uri = Telephony.Sms.CONTENT_URI
         val projection = arrayOf(
@@ -181,8 +205,9 @@ object FirestoreSyncHelper {
                         continue
                     }
 
-                    val isArchived = archivedIds.contains(threadId)
+                    val isArchived = (prefArchivedIds.contains(threadId) || systemArchivedIds.contains(threadId)) && !prefUnarchivedIds.contains(threadId)
                     val isOtp = OtpClassifier.extractOtp(body) != null
+
 
                     val contactName = contactCache.getOrPut(address) {
                         resolveContactName(context, address) ?: SmsAddress.cleanDisplayName(address)
