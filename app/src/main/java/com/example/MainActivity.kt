@@ -707,7 +707,8 @@ fun SMSAppScreen(
         }
     }
 
-    // Recheck default SMS app and permissions on resume when user comes back from system settings
+    // Recheck default SMS app and permissions on resume when user comes back from system settings,
+    // and sync any pending deletions made from the web interface.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -716,6 +717,17 @@ fun SMSAppScreen(
                 permissionsGranted = checkSmsPermissions(context)
                 deletedIds = deleteManager.getDeletedThreads().keys
                 deletedMessages = deleteManager.getDeletedMessages()
+
+                if (permissionsGranted && isDefaultSms) {
+                    appScope.launch {
+                        val deleted = FirestoreSyncHelper.syncWebDeletionsToDevice(context)
+                        if (deleted > 0) {
+                            deletedIds = deleteManager.getDeletedThreads().keys
+                            deletedMessages = deleteManager.getDeletedMessages()
+                            refreshCounter++
+                        }
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

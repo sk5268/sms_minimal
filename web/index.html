@@ -113,7 +113,12 @@
             <p id="activeThreadSender" class="text-xs text-neutral-400 font-mono-clean font-medium"></p>
           </div>
         </div>
-        <span id="activeThreadBadge" class="text-xs font-mono-clean text-neutral-400 px-3 py-1 rounded-full bg-neutral-800/90 border border-neutral-700/60 font-medium"></span>
+        <div class="flex items-center space-x-2">
+          <span id="activeThreadBadge" class="text-xs font-mono-clean text-neutral-400 px-3 py-1 rounded-full bg-neutral-800/90 border border-neutral-700/60 font-medium"></span>
+          <button id="deleteThreadBtn" title="Delete conversation" class="p-2.5 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-400 transition border border-red-900/40 flex items-center justify-center">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+          </button>
+        </div>
       </div>
 
       <!-- Controls: Tabs + Search (Visible in thread list mode) -->
@@ -182,6 +187,9 @@
     import { 
       getFirestore, 
       collection, 
+      doc,
+      updateDoc,
+      writeBatch,
       query, 
       orderBy, 
       limit, 
@@ -227,6 +235,7 @@
     const activeThreadName = document.getElementById("activeThreadName");
     const activeThreadSender = document.getElementById("activeThreadSender");
     const activeThreadBadge = document.getElementById("activeThreadBadge");
+    const deleteThreadBtn = document.getElementById("deleteThreadBtn");
     const searchInput = document.getElementById("searchInput");
     const loginWithGoogleBtn = document.getElementById("loginWithGoogleBtn");
     const switchUserBtn = document.getElementById("switchUserBtn");
@@ -276,6 +285,36 @@
     backToThreadsBtn.addEventListener("click", () => {
       activeThreadKey = null;
       renderThreads();
+    });
+
+    deleteThreadBtn.addEventListener("click", async () => {
+      if (!activeThreadKey) return;
+      const threads = computeThreads();
+      const thread = threads.find(t => t.key === activeThreadKey);
+      if (!thread || thread.messages.length === 0) return;
+
+      const count = thread.messages.length;
+      if (!confirm(`Delete entire conversation (${count} message${count > 1 ? 's' : ''})? It will be deleted from your phone when you open SMS Lite.`)) {
+        return;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        for (const msg of thread.messages) {
+          if (msg.id) {
+            batch.update(doc(db, "sms", msg.id), {
+              deletedFromWeb: true,
+              deletedAt: Date.now()
+            });
+          }
+        }
+        await batch.commit();
+        activeThreadKey = null;
+        renderThreads();
+      } catch (err) {
+        console.error("Error deleting conversation:", err);
+        alert("Failed to delete conversation: " + err.message);
+      }
     });
 
     function updateTabUI() {
@@ -384,6 +423,7 @@
       const threadMap = new Map();
 
       for (const msg of allMessages) {
+        if (msg.deletedFromWeb) continue;
         const key = getConversationKey(msg);
         if (!threadMap.has(key)) {
           threadMap.set(key, {
@@ -536,21 +576,51 @@
         const isSent = msg.type === 2;
         const isOtp = msg.isOtp;
         return `
-          <div class="flex flex-col ${isSent ? "items-end" : "items-start"}">
-            <div class="max-w-[85%] rounded-2xl p-4 border ${
+          <div class="flex flex-col ${isSent ? "items-end" : "items-start"} group">
+            <div class="relative max-w-[85%] rounded-2xl p-4 border ${
               isSent 
                 ? "bg-indigo-950/50 border-indigo-900/60 text-indigo-100" 
                 : "bg-[#14161f] border-neutral-800 text-neutral-200"
             }">
-              <div class="flex items-center space-x-2.5 mb-2">
-                <span class="text-xs font-mono-clean text-neutral-400">${formatDetailTime(msg.timestamp)}</span>
-                ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-clean">OTP</span>` : ""}
+              <div class="flex items-center justify-between space-x-2.5 mb-2">
+                <div class="flex items-center space-x-2">
+                  <span class="text-xs font-mono-clean text-neutral-400">${formatDetailTime(msg.timestamp)}</span>
+                  ${isOtp ? `<span class="bg-indigo-950 text-indigo-400 border border-indigo-800/60 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-clean">OTP</span>` : ""}
+                </div>
+                <button 
+                  data-msg-id="${msg.id}" 
+                  title="Delete message" 
+                  class="delete-msg-btn opacity-60 hover:opacity-100 p-1 text-neutral-400 hover:text-red-400 transition rounded-lg"
+                >
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
               </div>
               <p class="text-sm leading-relaxed whitespace-pre-wrap select-text font-normal">${escapeHtml(msg.body || "")}</p>
             </div>
           </div>
         `;
       }).join("");
+
+      // Add individual message delete handlers
+      messageHistoryList.querySelectorAll(".delete-msg-btn").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const docId = btn.getAttribute("data-msg-id");
+          if (!docId) return;
+          if (!confirm("Delete this message? It will sync and be deleted from your phone when you open SMS Lite.")) {
+            return;
+          }
+          try {
+            await updateDoc(doc(db, "sms", docId), {
+              deletedFromWeb: true,
+              deletedAt: Date.now()
+            });
+          } catch (err) {
+            console.error("Error marking message as deleted:", err);
+            alert("Failed to delete message: " + err.message);
+          }
+        });
+      });
 
       // Auto scroll to bottom of conversation
       messageHistoryList.scrollTop = messageHistoryList.scrollHeight;

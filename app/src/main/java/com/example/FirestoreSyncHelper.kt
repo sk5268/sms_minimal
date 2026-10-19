@@ -333,4 +333,76 @@ object FirestoreSyncHelper {
             onComplete(count, lastError)
         }
     }
+
+    /**
+     * Checks Firestore for any messages flagged with `deletedFromWeb == true`.
+     * Deletes them from the local device Telephony database, updates DeleteManager,
+     * and deletes the Firestore document so it is cleanly removed everywhere.
+     */
+    suspend fun syncWebDeletionsToDevice(context: Context): Int = withContext(Dispatchers.IO) {
+        val auth = FirebaseAuth.getInstance()
+        if (auth.currentUser == null) {
+            try {
+                com.google.android.gms.tasks.Tasks.await(auth.signInAnonymously())
+            } catch (e: Exception) {
+                Log.e(TAG, "Auth failed during web deletions sync", e)
+                return@withContext 0
+            }
+        }
+
+        val db = FirebaseFirestore.getInstance()
+        val deletedCount: Int
+        try {
+            val querySnapshot = com.google.android.gms.tasks.Tasks.await(
+                db.collection(COLLECTION_SMS)
+                    .whereEqualTo("deletedFromWeb", true)
+                    .get()
+            )
+
+            if (querySnapshot.isEmpty) {
+                return@withContext 0
+            }
+
+            Log.d(TAG, "Found ${querySnapshot.size()} pending web deletions to sync to device")
+            val deleteManager = DeleteManager(context)
+            val docsToDeleteFromFirestore = mutableListOf<com.google.firebase.firestore.DocumentReference>()
+
+            for (doc in querySnapshot.documents) {
+                val docId = doc.id
+                docsToDeleteFromFirestore.add(doc.reference)
+
+                val messageId = if (docId.startsWith("msg_")) {
+                    docId.substring(4).toLongOrNull()
+                } else null
+
+                if (messageId != null && messageId > 0L) {
+                    val timestamp = doc.getLong("timestamp") ?: 0L
+                    val sender = doc.getString("sender")
+                    // Soft-delete message in DeleteManager first so UI updates immediately
+                    deleteManager.softDeleteMessage(messageId, timestamp, sender)
+                    // Delete from system SMS Telephony provider
+                    deleteSmsById(context, messageId)
+                    Log.d(TAG, "Deleted SMS $messageId from device triggered by web sync")
+                }
+            }
+
+            deletedCount = docsToDeleteFromFirestore.size
+            if (docsToDeleteFromFirestore.isNotEmpty()) {
+                val chunks = docsToDeleteFromFirestore.chunked(250)
+                for (chunk in chunks) {
+                    val batch = db.batch()
+                    for (ref in chunk) {
+                        batch.delete(ref)
+                    }
+                    com.google.android.gms.tasks.Tasks.await(batch.commit())
+                }
+                Log.d(TAG, "Successfully removed $deletedCount web-deleted documents from Firestore")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing web deletions to device", e)
+            return@withContext 0
+        }
+
+        deletedCount
+    }
 }
