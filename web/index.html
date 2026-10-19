@@ -287,14 +287,15 @@
       renderThreads();
     });
 
-    deleteThreadBtn.addEventListener("click", async () => {
-      if (!activeThreadKey) return;
+    async function deleteThreadByKey(threadKey) {
+      if (!threadKey) return;
       const threads = computeThreads();
-      const thread = threads.find(t => t.key === activeThreadKey);
+      const thread = threads.find(t => t.key === threadKey);
       if (!thread || thread.messages.length === 0) return;
 
+      const displayName = thread.contactName || thread.sender;
       const count = thread.messages.length;
-      if (!confirm(`Delete entire conversation (${count} message${count > 1 ? 's' : ''})? It will be deleted from your phone when you open SMS Lite.`)) {
+      if (!confirm(`Delete conversation with "${displayName}" (${count} message${count > 1 ? 's' : ''})?\nIt will be deleted from your phone when you open SMS Lite.`)) {
         return;
       }
 
@@ -309,12 +310,18 @@
           }
         }
         await batch.commit();
-        activeThreadKey = null;
+        if (activeThreadKey === threadKey) {
+          activeThreadKey = null;
+        }
         renderThreads();
       } catch (err) {
         console.error("Error deleting conversation:", err);
         alert("Failed to delete conversation: " + err.message);
       }
+    }
+
+    deleteThreadBtn.addEventListener("click", () => {
+      deleteThreadByKey(activeThreadKey);
     });
 
     function updateTabUI() {
@@ -527,10 +534,28 @@
                 </div>
               </div>
             </div>
-            <i data-lucide="chevron-right" class="w-4 h-4 text-neutral-500 shrink-0"></i>
+            <div class="flex items-center space-x-1 shrink-0">
+              <button
+                data-delete-key="${t.key}"
+                title="Delete conversation"
+                class="delete-thread-item-btn p-2 rounded-xl text-neutral-500 hover:text-red-400 hover:bg-red-950/40 transition"
+              >
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+              </button>
+              <i data-lucide="chevron-right" class="w-4 h-4 text-neutral-500"></i>
+            </div>
           </div>
         `;
       }).join("");
+
+      // Add click listeners to delete conversation directly from thread list
+      threadList.querySelectorAll(".delete-thread-item-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const key = btn.getAttribute("data-delete-key");
+          deleteThreadByKey(key);
+        });
+      });
 
       // Add click listeners to open thread
       threadList.querySelectorAll(".thread-card").forEach(el => {
