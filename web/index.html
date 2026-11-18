@@ -423,7 +423,7 @@
       const threadMap = new Map();
 
       for (const msg of allMessages) {
-        if (msg.deletedFromWeb) continue;
+        if (msg.deletedFromWeb || msg.deletedAt) continue;
         const key = getConversationKey(msg);
         if (!threadMap.has(key)) {
           threadMap.set(key, {

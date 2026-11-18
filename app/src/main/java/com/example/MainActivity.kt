@@ -1415,8 +1415,20 @@ fun MainThreadsScreen(
                             },
                             onClick = {
                                 expanded = false
-                                Toast.makeText(context, "Starting historic SMS sync...", Toast.LENGTH_SHORT).show()
                                 coroutineScope.launch {
+                                    if (CloudAuth.signedInUser() == null) {
+                                        val activity = context as? Activity ?: return@launch
+                                        val signIn = CloudAuth.signIn(activity)
+                                        if (signIn.isFailure) {
+                                            Toast.makeText(
+                                                context,
+                                                "Cloud sign-in failed: ${signIn.exceptionOrNull()?.localizedMessage}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            return@launch
+                                        }
+                                    }
+                                    Toast.makeText(context, "Starting historic SMS sync...", Toast.LENGTH_SHORT).show()
                                     FirestoreSyncHelper.syncAllHistoricMessages(
                                         context = context,
                                         onProgress = { synced, total ->

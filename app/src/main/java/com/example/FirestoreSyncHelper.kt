@@ -6,7 +6,7 @@ import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.Telephony
 import android.util.Log
-import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 object FirestoreSyncHelper {
     private const val TAG = "FirestoreSyncHelper"
     private const val COLLECTION_SMS = "sms"
+    private const val SOFT_DELETE_RETENTION_MS = 48L * 60 * 60 * 1000
 
     private var debouncedSyncJob: Job? = null
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -75,23 +76,15 @@ object FirestoreSyncHelper {
         isArchived: Boolean = false,
         threadId: Long? = null
     ) {
-        val auth = FirebaseAuth.getInstance()
-        val currentUser = auth.currentUser
+        if (CloudAuth.signedInUser() == null) {
+            // The next bulk sync after the user signs in picks this message up.
+            Log.w(TAG, "Not signed in to cloud sync; skipping upload of incoming SMS")
+            return
+        }
 
         val contactName = resolveContactName(context, sender) ?: SmsAddress.cleanDisplayName(sender)
         val conversationKey = SmsAddress.conversationKey(sender)
-
-        if (currentUser == null) {
-            auth.signInAnonymously()
-                .addOnSuccessListener {
-                    writeMessageDocument(sender, contactName, conversationKey, threadId, body, timestamp, isOtp, messageId, isArchived)
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Failed to authenticate anonymously with Firebase", e)
-                }
-        } else {
-            writeMessageDocument(sender, contactName, conversationKey, threadId, body, timestamp, isOtp, messageId, isArchived)
-        }
+        writeMessageDocument(sender, contactName, conversationKey, threadId, body, timestamp, isOtp, messageId, isArchived)
     }
 
     private fun writeMessageDocument(
@@ -117,7 +110,7 @@ object FirestoreSyncHelper {
             "contactName" to contactName,
             "conversationKey" to conversationKey,
             "threadId" to (threadId ?: 0L),
-            "body" to body,
+            "body" to OtpClassifier.redactForCloud(body),
             "timestamp" to timestamp,
             "isOtp" to isOtp,
             "isArchived" to isArchived,
@@ -143,15 +136,10 @@ object FirestoreSyncHelper {
         onProgress: (synced: Int, total: Int) -> Unit = { _, _ -> },
         onComplete: (totalSynced: Int, errorMsg: String?) -> Unit = { _, _ -> }
     ) = withContext(Dispatchers.IO) {
-        val auth = FirebaseAuth.getInstance()
-        if (auth.currentUser == null) {
-            try {
-                com.google.android.gms.tasks.Tasks.await(auth.signInAnonymously())
-            } catch (e: Exception) {
-                Log.e(TAG, "Auth failed during bulk sync", e)
-                withContext(Dispatchers.Main) { onComplete(0, "Auth error: ${e.localizedMessage}") }
-                return@withContext
-            }
+        if (CloudAuth.signedInUser() == null) {
+            Log.w(TAG, "Not signed in to cloud sync; skipping bulk sync")
+            withContext(Dispatchers.Main) { onComplete(0, "Not signed in. Use Sync to Cloud to sign in.") }
+            return@withContext
         }
 
         val archiveManager = ArchiveManager(context)
@@ -249,7 +237,7 @@ object FirestoreSyncHelper {
                             "contactName" to contactName,
                             "conversationKey" to conversationKey,
                             "threadId" to threadId,
-                            "body" to body,
+                            "body" to OtpClassifier.redactForCloud(body),
                             "timestamp" to timestamp,
                             "isOtp" to isOtp,
                             "isArchived" to isArchived,
@@ -289,12 +277,27 @@ object FirestoreSyncHelper {
             }
         }
 
-        // Prune deleted or orphaned messages from Firestore
+        // Soft-delete messages that are gone from the phone, restore ones that came
+        // back, and purge tombstones older than the retention window. Readers that
+        // were offline (e.g. Jarvis) still see the deletion for 48 hours.
         try {
             val snapshot = com.google.android.gms.tasks.Tasks.await(db.collection(COLLECTION_SMS).get())
-            val docsToDelete = mutableListOf<com.google.firebase.firestore.DocumentReference>()
+            val now = System.currentTimeMillis()
+            val docsToSoftDelete = mutableListOf<com.google.firebase.firestore.DocumentSnapshot>()
+            val docsToRestore = mutableListOf<com.google.firebase.firestore.DocumentReference>()
+            val docsToPurge = mutableListOf<com.google.firebase.firestore.DocumentReference>()
             for (doc in snapshot.documents) {
                 val docId = doc.id
+                val deletedAt = doc.getLong("deletedAt")
+                if (deletedAt != null) {
+                    when {
+                        now - deletedAt >= SOFT_DELETE_RETENTION_MS -> docsToPurge.add(doc.reference)
+                        // Restored on the phone; a pending web deletion keeps its flag until the phone applies it.
+                        activeDocIds.contains(docId) && doc.getBoolean("deletedFromWeb") != true ->
+                            docsToRestore.add(doc.reference)
+                    }
+                    continue
+                }
                 val docThreadId = doc.getLong("threadId")
 
                 val isDeletedThread = docThreadId != null && deletedIds.contains(docThreadId)
@@ -310,23 +313,36 @@ object FirestoreSyncHelper {
                 val isNotActive = !activeDocIds.contains(docId)
 
                 if (isDeletedThread || isDeletedMsg || isNotActive) {
-                    docsToDelete.add(doc.reference)
+                    docsToSoftDelete.add(doc)
                 }
             }
 
-            if (docsToDelete.isNotEmpty()) {
-                val deleteChunks = docsToDelete.chunked(250)
-                for (chunk in deleteChunks) {
-                    val deleteBatch = db.batch()
-                    for (ref in chunk) {
-                        deleteBatch.delete(ref)
-                    }
-                    com.google.android.gms.tasks.Tasks.await(deleteBatch.commit())
+            for (chunk in docsToSoftDelete.chunked(250)) {
+                val batch = db.batch()
+                for (doc in chunk) {
+                    val update = mutableMapOf<String, Any>("deletedAt" to now)
+                    // Uploads made before redaction existed may still hold a code.
+                    doc.getString("body")?.let { update["body"] = OtpClassifier.redactForCloud(it) }
+                    batch.update(doc.reference, update)
                 }
-                Log.d(TAG, "Successfully pruned ${docsToDelete.size} deleted/orphaned messages from Firestore")
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
             }
+            for (chunk in docsToRestore.chunked(250)) {
+                val batch = db.batch()
+                for (ref in chunk) batch.update(ref, "deletedAt", FieldValue.delete())
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+            }
+            for (chunk in docsToPurge.chunked(250)) {
+                val batch = db.batch()
+                for (ref in chunk) batch.delete(ref)
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+            }
+            Log.d(
+                TAG,
+                "Soft-deleted ${docsToSoftDelete.size}, restored ${docsToRestore.size}, purged ${docsToPurge.size} messages in Firestore"
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Error pruning deleted messages from Firestore", e)
+            Log.e(TAG, "Error reconciling deleted messages in Firestore", e)
         }
 
         withContext(Dispatchers.Main) {
@@ -337,18 +353,11 @@ object FirestoreSyncHelper {
     /**
      * Checks Firestore for any messages flagged with `deletedFromWeb == true`.
      * Deletes them from the local device Telephony database, updates DeleteManager,
-     * and deletes the Firestore document so it is cleanly removed everywhere.
+     * and clears the web flag, leaving a `deletedAt` tombstone that the bulk sync
+     * purges after the retention window.
      */
     suspend fun syncWebDeletionsToDevice(context: Context): Int = withContext(Dispatchers.IO) {
-        val auth = FirebaseAuth.getInstance()
-        if (auth.currentUser == null) {
-            try {
-                com.google.android.gms.tasks.Tasks.await(auth.signInAnonymously())
-            } catch (e: Exception) {
-                Log.e(TAG, "Auth failed during web deletions sync", e)
-                return@withContext 0
-            }
-        }
+        if (CloudAuth.signedInUser() == null) return@withContext 0
 
         val db = FirebaseFirestore.getInstance()
         val deletedCount: Int
@@ -388,15 +397,22 @@ object FirestoreSyncHelper {
 
             deletedCount = docsToDeleteFromFirestore.size
             if (docsToDeleteFromFirestore.isNotEmpty()) {
+                val now = System.currentTimeMillis()
                 val chunks = docsToDeleteFromFirestore.chunked(250)
                 for (chunk in chunks) {
                     val batch = db.batch()
                     for (ref in chunk) {
-                        batch.delete(ref)
+                        batch.update(
+                            ref,
+                            mapOf<String, Any>(
+                                "deletedFromWeb" to FieldValue.delete(),
+                                "deletedAt" to now
+                            )
+                        )
                     }
                     com.google.android.gms.tasks.Tasks.await(batch.commit())
                 }
-                Log.d(TAG, "Successfully removed $deletedCount web-deleted documents from Firestore")
+                Log.d(TAG, "Applied $deletedCount web deletions on device and tombstoned them in Firestore")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing web deletions to device", e)

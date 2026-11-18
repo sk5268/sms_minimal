@@ -40,6 +40,10 @@ object DebitParser {
     /** True when the body quotes a rupee amount, i.e. it reads like a money alert. */
     fun containsCurrencyAmount(body: String): Boolean = extractAmountPaise(body) != null
 
+    /** Character ranges of every currency amount in the body, e.g. "Rs.2,500.00". */
+    fun currencyAmountRanges(body: String): List<IntRange> =
+        amountPatterns.flatMap { pattern -> pattern.findAll(body).map { it.range }.toList() }
+
     fun normalizeSenderKey(sender: String): String {
         return sender.trim().uppercase().replace(Regex("[^A-Z0-9-]"), "")
     }
