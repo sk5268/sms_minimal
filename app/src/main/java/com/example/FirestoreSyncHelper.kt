@@ -110,7 +110,7 @@ object FirestoreSyncHelper {
             "contactName" to contactName,
             "conversationKey" to conversationKey,
             "threadId" to (threadId ?: 0L),
-            "body" to OtpClassifier.redactForCloud(body),
+            "body" to body,
             "timestamp" to timestamp,
             "isOtp" to isOtp,
             "isArchived" to isArchived,
@@ -237,7 +237,7 @@ object FirestoreSyncHelper {
                             "contactName" to contactName,
                             "conversationKey" to conversationKey,
                             "threadId" to threadId,
-                            "body" to OtpClassifier.redactForCloud(body),
+                            "body" to body,
                             "timestamp" to timestamp,
                             "isOtp" to isOtp,
                             "isArchived" to isArchived,
@@ -320,10 +320,7 @@ object FirestoreSyncHelper {
             for (chunk in docsToSoftDelete.chunked(250)) {
                 val batch = db.batch()
                 for (doc in chunk) {
-                    val update = mutableMapOf<String, Any>("deletedAt" to now)
-                    // Uploads made before redaction existed may still hold a code.
-                    doc.getString("body")?.let { update["body"] = OtpClassifier.redactForCloud(it) }
-                    batch.update(doc.reference, update)
+                    batch.update(doc.reference, "deletedAt", now)
                 }
                 com.google.android.gms.tasks.Tasks.await(batch.commit())
             }

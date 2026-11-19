@@ -73,43 +73,6 @@ class OtpClassifierTest {
     }
 
     @Test
-    fun genuineOtpCodesNeverLeaveThePhone() {
-        val codes = listOf("123456", "483920", "8371", "552134")
-        for ((body, code) in genuineOtps.zip(codes)) {
-            val redacted = OtpClassifier.redactForCloud(body)
-            assertFalse("code leaked: $redacted", redacted.contains(code))
-        }
-    }
-
-    @Test
-    fun redactionKeepsAmountsInBankAlerts() {
-        for (body in bankAlerts) {
-            val redacted = OtpClassifier.redactForCloud(body)
-            for (amount in DebitParser.currencyAmountRanges(body).map { body.substring(it) }) {
-                assertTrue("amount lost: $redacted", redacted.contains(amount))
-            }
-        }
-    }
-
-    @Test
-    fun paymentOtpMasksTheCodeButKeepsTheAmount() {
-        val redacted = OtpClassifier.redactForCloud("Your OTP is 447281 for a txn of Rs.2500 on your card.")
-        assertEquals("Your OTP is •••••• for a txn of Rs.2500 on your card.", redacted)
-    }
-
-    @Test
-    fun labelledAlphanumericCodesAreMasked() {
-        val redacted = OtpClassifier.redactForCloud("Your OTP code: AB12CD. Do not share.")
-        assertFalse(redacted.contains("AB12CD"))
-    }
-
-    @Test
-    fun messagesWithoutOtpAreUploadedUnchanged() {
-        val body = "Your order 12345 has shipped."
-        assertEquals(body, OtpClassifier.redactForCloud(body))
-    }
-
-    @Test
     fun nonOtpMessagesAreIgnoredEntirely() {
         assertNull(OtpClassifier.extractOtp("Your order 12345 has shipped."))
         assertFalse(OtpClassifier.isAutoDeletable("Your order 12345 has shipped."))

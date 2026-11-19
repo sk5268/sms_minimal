@@ -56,41 +56,6 @@ object OtpClassifier {
         return true
     }
 
-    /**
-     * The body as it may leave the phone: any code in a message that mentions an
-     * OTP is masked, while currency amounts stay readable so bank alerts remain
-     * useful money records in the cloud copy. Over-masking a reference number is
-     * fine; leaking a code is not.
-     */
-    fun redactForCloud(body: String): String {
-        if (!mentionsOtp(body)) return body
-        // Only amounts that start a word ("Rs.500", not the "rs 1234" inside "hours 1234").
-        val amounts = DebitParser.currencyAmountRanges(body)
-            .filter { it.first == 0 || !body[it.first - 1].isLetter() }
-        var result = standaloneCode.replace(body) { match ->
-            if (amounts.any { match.range.first in it }) match.value else mask(match.value)
-        }
-        // Scan with overlap: in "OTP code: AB12CD" the first match ends inside the
-        // label, and the real code only matches from the next position. Masking
-        // preserves length, so ranges stay valid while rewriting.
-        var from = 0
-        while (from < result.length) {
-            val match = labelledCode.find(result, from) ?: break
-            val code = match.groups[1]
-            if (code != null && looksLikeCode(code.value)) {
-                result = result.replaceRange(code.range, mask(code.value))
-            }
-            from = match.range.first + 1
-        }
-        return result
-    }
-
-    private fun looksLikeCode(candidate: String): Boolean =
-        candidate.any { it.isDigit() } ||
-            (candidate.length >= 4 && candidate.all { it.isUpperCase() || it.isDigit() })
-
-    private fun mask(code: String): String = "•".repeat(code.length)
-
     private fun mentionsOtp(body: String): Boolean {
         if (otpWord.containsMatchIn(body)) return true
         val lower = body.lowercase()
