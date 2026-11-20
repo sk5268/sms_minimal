@@ -11,7 +11,10 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.core.app.RemoteInput
+import com.example.finance.DebitNotifier
 import com.example.finance.FinanceRepository
+import com.example.finance.LocationCapture
 import kotlinx.coroutines.runBlocking
 
 class NotificationActionReceiver : BroadcastReceiver() {
@@ -22,6 +25,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val ACTION_DISMISS = "com.example.ACTION_DISMISS"
         const val ACTION_CATEGORIZE = "com.example.ACTION_CATEGORIZE"
         const val ACTION_DONT_TRACK = "com.example.ACTION_DONT_TRACK"
+        const val ACTION_TAG = "com.example.ACTION_TAG"
+        const val ACTION_TRIP_KM = "com.example.ACTION_TRIP_KM"
+        const val EXTRA_CATEGORY_ID = "com.example.EXTRA_CATEGORY_ID"
         const val EXTRA_OTP = "com.example.EXTRA_OTP"
         const val EXTRA_SMS_URI = "com.example.EXTRA_SMS_URI"
         const val EXTRA_NOTIF_ID = "com.example.EXTRA_NOTIF_ID"
@@ -99,12 +105,78 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 }
                 dismissSenderNotification(appContext, intent.getStringExtra(EXTRA_SENDER), notifId)
             }
+            ACTION_TAG -> {
+                val debitId = intent.getLongExtra(EXTRA_DEBIT_ID, -1L)
+                val categoryId = intent.getLongExtra(EXTRA_CATEGORY_ID, -1L)
+                val sender = intent.getStringExtra(EXTRA_SENDER)
+                if (debitId <= 0L || categoryId <= 0L) return
+                val pendingResult = goAsync()
+                Thread {
+                    try {
+                        val repo = FinanceRepository.getInstance(appContext)
+                        val updated = runBlocking {
+                            val fix = if (LocationCapture.hasBackgroundPermission(appContext)) {
+                                LocationCapture.currentFix(appContext, timeoutMs = 3_000L)
+                            } else null
+                            repo.categorizeDebit(debitId, categoryId, fix = fix)
+                        }
+                        val result = updated?.let { runBlocking { repo.resultFor(it) } }
+                        if (updated != null && result?.isFuel == true && notifId != -1) {
+                            DebitNotifier.showTripPrompt(
+                                appContext, notifId, debitId, updated.amountPaise, updated.litres, sender.orEmpty()
+                            )
+                        } else {
+                            dismissSenderNotification(appContext, sender, notifId)
+                        }
+                        toast(appContext, "Logged · ${result?.categoryName ?: "tagged"}")
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }.start()
+            }
+            ACTION_TRIP_KM -> {
+                val debitId = intent.getLongExtra(EXTRA_DEBIT_ID, -1L)
+                val km = RemoteInput.getResultsFromIntent(intent)
+                    ?.getCharSequence(DebitNotifier.KEY_TRIP_KM)
+                    ?.toString()?.trim()?.replace(",", "")?.toDoubleOrNull()
+                val pendingResult = goAsync()
+                Thread {
+                    try {
+                        val stats = if (debitId > 0L && km != null) {
+                            runBlocking { FinanceRepository.getInstance(appContext).setTripKm(debitId, km) }
+                        } else null
+                        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        if (notifId != -1) nm.cancel(notifId)
+                        val message = when {
+                            km == null -> "Couldn't read that number"
+                            stats == null -> "Saved trip km"
+                            stats.lastKmpl != null -> String.format(
+                                java.util.Locale.US, "%.1f km/L · avg %.1f", stats.lastKmpl, stats.avgKmpl ?: stats.lastKmpl
+                            )
+                            else -> "Saved. Mileage shows from the next fill."
+                        }
+                        toast(appContext, message)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }.start()
+            }
             ACTION_DISMISS -> {
                 val sender = intent.getStringExtra(EXTRA_SENDER)
                 if (!sender.isNullOrEmpty()) {
                     SmsReceiver.clearSenderMessages(appContext, sender)
                 }
             }
+        }
+    }
+
+    private fun toast(context: Context, text: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
         }
     }
 

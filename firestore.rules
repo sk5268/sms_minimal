@@ -15,6 +15,11 @@ service cloud.firestore {
       allow read, write: if isOwner();
     }
 
+    // Tagged debits mirrored from the phone for Jarvis's finance tables.
+    match /debits/{debitId} {
+      allow read, write: if isOwner();
+    }
+
     // Everything else stays closed (rules deny by default).
   }
 }

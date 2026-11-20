@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.PayeeParser
 import com.example.SmsIdentity
 
 @Database(
@@ -13,10 +14,9 @@ import com.example.SmsIdentity
         CategoryEntity::class,
         DebitEntity::class,
         IgnoredSmsEntity::class,
-        SenderCategoryMemoryEntity::class,
         KeywordRuleEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class FinanceDatabase : RoomDatabase() {
@@ -111,6 +111,76 @@ abstract class FinanceDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Tag memory now keys on who was paid and where, not on the bank that sent
+         * the SMS. The old bank-keyed memory is dropped: it mapped every payment from
+         * one account to whatever category was picked last.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                listOf(
+                    "ALTER TABLE `debits` ADD COLUMN `payeeKey` TEXT DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `payeeName` TEXT DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `lat` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `lng` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `locAccuracyM` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `tagSource` TEXT NOT NULL DEFAULT 'none'",
+                    "ALTER TABLE `debits` ADD COLUMN `tripKm` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `litres` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `fuelPricePerL` REAL DEFAULT NULL",
+                    "ALTER TABLE `debits` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0",
+                    "CREATE INDEX IF NOT EXISTS `index_debits_payeeKey` ON `debits` (`payeeKey`)",
+                    "CREATE INDEX IF NOT EXISTS `index_debits_lat` ON `debits` (`lat`)",
+                    "DROP TABLE IF EXISTS `sender_category_memory`",
+                    "UPDATE `debits` SET `updatedAt` = `createdAt`"
+                ).forEach { db.execSQL(it) }
+
+                // Past manual choices seed the new memory; old auto-tags never teach it.
+                db.execSQL(
+                    """
+                    UPDATE `debits` SET `tagSource` = CASE
+                        WHEN `autoCategorized` = 1 THEN 'legacy_auto'
+                        WHEN `categoryId` IN (SELECT `id` FROM `categories` WHERE `name` = 'Uncategorized') THEN 'none'
+                        ELSE 'manual' END
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE `debits` SET `fuelPricePerL` = ${Fuel.DEFAULT_PRICE_PER_LITRE},
+                        `litres` = (`amountPaise` / 100.0) / ${Fuel.DEFAULT_PRICE_PER_LITRE}
+                    WHERE `categoryId` IN (
+                        SELECT `id` FROM `categories` WHERE LOWER(`name`) IN ('fuel', 'petrol', 'diesel')
+                    )
+                    """.trimIndent()
+                )
+
+                val updates = mutableListOf<Triple<Long, String, String>>()
+                db.query("SELECT id, messageKey, sender, snippet FROM debits").use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getLong(0)
+                        val isManual = c.getString(1).orEmpty().startsWith("manual:")
+                        val payee = if (isManual) {
+                            val name = c.getString(2).orEmpty().trim()
+                            if (name.isBlank() || name.equals("Cash", ignoreCase = true)) null
+                            else PayeeParser.Payee("N:" + PayeeParser.normaliseKey(name), name)
+                        } else {
+                            PayeeParser.parse(c.getString(3).orEmpty())
+                        }
+                        if (payee != null) updates += Triple(id, payee.key, payee.name)
+                    }
+                }
+                val stmt = db.compileStatement("UPDATE debits SET payeeKey = ?, payeeName = ? WHERE id = ?")
+                for ((id, key, name) in updates) {
+                    stmt.clearBindings()
+                    stmt.bindString(1, key)
+                    stmt.bindString(2, name)
+                    stmt.bindLong(3, id)
+                    stmt.executeUpdateDelete()
+                }
+                stmt.close()
+            }
+        }
+
         fun getInstance(context: Context): FinanceDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -119,7 +189,7 @@ abstract class FinanceDatabase : RoomDatabase() {
                     "finance.db"
                 )
                     .createFromAsset("finance.db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .addCallback(SeedCallback())
                     .build()
                     .also { instance = it }

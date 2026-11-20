@@ -3,6 +3,7 @@ package com.example.finance
 import android.content.Context
 import android.provider.Telephony
 import com.example.DebitParser
+import com.example.PayeeParser
 import com.example.SmsIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -55,63 +56,194 @@ class FinanceRepository(context: Context) {
 
     suspend fun getDebitById(id: Long): DebitEntity? = dao.getDebitById(id)
 
+    data class IngestResult(
+        val debitId: Long,
+        val categoryId: Long,
+        val categoryName: String,
+        /** manual | payee | place | none */
+        val tagSource: String,
+        val isFuel: Boolean,
+        val litres: Double?,
+        val suggestions: List<CategoryEntity>
+    ) {
+        val isTagged: Boolean get() = tagSource != TagMemory.SOURCE_NONE
+    }
+
+    /**
+     * Stores a debit from a bank SMS. It is tagged only when the owner's own past tags
+     * for this payee (or this spot) agree; otherwise it waits with suggestions.
+     */
     suspend fun ingestDebit(
         amountPaise: Long,
         sender: String,
         snippet: String,
-        occurredAt: Long
-    ): Long? {
+        occurredAt: Long,
+        body: String = snippet,
+        fix: TagMemory.Fix? = null
+    ): IngestResult? {
         ensureSeeded()
         val messageKey = SmsIdentity.key(occurredAt, sender, snippet)
         if (dao.isIgnored(messageKey)) return null
-        val existing = dao.getDebitByMessageKey(messageKey)
-        if (existing != null) return existing.id
+        dao.getDebitByMessageKey(messageKey)?.let { return resultFor(it) }
 
-        val match = autoCategorizer.resolveCategory(sender, snippet)
+        val payee = PayeeParser.parse(body)
+        val resolution = resolve(payee?.key, fix)
+        val uncategorizedId = uncategorizedId()
+        val categoryId = resolution.categoryId ?: uncategorizedId
+        val category = dao.getCategoryById(categoryId)
+        val isFuel = Fuel.isFuelCategory(category?.name)
+        val price = if (isFuel) Fuel.pricePerLitre(appContext) else null
         val debit = DebitEntity(
             messageKey = messageKey,
             amountPaise = amountPaise,
             sender = sender,
             snippet = snippet,
-            categoryId = match.categoryId,
+            categoryId = categoryId,
             occurredAt = occurredAt,
-            autoCategorized = match.autoCategorized
+            autoCategorized = resolution.categoryId != null,
+            payeeKey = payee?.key,
+            payeeName = payee?.name,
+            lat = fix?.lat,
+            lng = fix?.lng,
+            locAccuracyM = fix?.accuracyM,
+            tagSource = resolution.source,
+            litres = price?.let { Fuel.litres(amountPaise, it) },
+            fuelPricePerL = price
         )
         val rowId = dao.insertDebit(debit)
-        if (rowId > 0L) return rowId
-        return dao.getDebitByMessageKey(messageKey)?.id
+        val stored = if (rowId > 0L) dao.getDebitById(rowId) else dao.getDebitByMessageKey(messageKey)
+        stored ?: return null
+        FinanceCloudSync.push(appContext, stored.id)
+        return resultFor(stored)
     }
 
+    suspend fun resultFor(debit: DebitEntity): IngestResult {
+        val category = dao.getCategoryById(debit.categoryId)
+        return IngestResult(
+            debitId = debit.id,
+            categoryId = debit.categoryId,
+            categoryName = category?.name ?: "Uncategorized",
+            tagSource = if (debit.tagSource == "legacy_auto") TagMemory.SOURCE_PAYEE else debit.tagSource,
+            isFuel = Fuel.isFuelCategory(category?.name),
+            litres = debit.litres,
+            suggestions = suggestionsFor(debit)
+        )
+    }
+
+    private suspend fun uncategorizedId(): Long = dao.getCategoryByName("Uncategorized")?.id ?: 0L
+
+    private suspend fun resolve(payeeKey: String?, fix: TagMemory.Fix?): TagMemory.Resolution {
+        val payeeHistory = payeeKey?.let { dao.manualTagsForPayee(it).map(::toPoint) }.orEmpty()
+        return TagMemory.resolve(payeeKey, fix, payeeHistory, nearby(fix))
+    }
+
+    private suspend fun nearby(fix: TagMemory.Fix?): List<TagMemory.TaggedPoint> {
+        fix ?: return emptyList()
+        val box = TagMemory.boundingBox(fix.lat, fix.lng, TagMemory.PLACE_RADIUS_M * 2)
+        return dao.manualTagsInBox(box[0], box[1], box[2], box[3]).map(::toPoint)
+    }
+
+    private fun toPoint(d: DebitEntity) = TagMemory.TaggedPoint(
+        categoryId = d.categoryId,
+        payeeKey = d.payeeKey,
+        lat = d.lat,
+        lng = d.lng,
+        accuracyM = d.locAccuracyM,
+        occurredAt = d.occurredAt
+    )
+
+    /** Best-first categories to offer for this debit (never Uncategorized or its own tag). */
+    suspend fun suggestionsFor(debit: DebitEntity, limit: Int = 3): List<CategoryEntity> {
+        val fix = if (debit.lat != null && debit.lng != null) {
+            TagMemory.Fix(debit.lat, debit.lng, debit.locAccuracyM ?: 999.0)
+        } else null
+        val payeeHistory = debit.payeeKey?.let { key ->
+            dao.manualTagsForPayee(key).filter { it.id != debit.id }.map(::toPoint)
+        }.orEmpty()
+        val ids = TagMemory.suggestions(
+            payeeKey = debit.payeeKey,
+            fix = fix,
+            payeeHistory = payeeHistory,
+            nearbyHistory = nearby(fix).filter { it.occurredAt != debit.occurredAt },
+            keywordHint = autoCategorizer.keywordHint(debit.payeeName ?: debit.sender, debit.snippet),
+            frequentCategoryIds = dao.frequentCategoryIds(System.currentTimeMillis() - 90L * 86_400_000),
+            excludeIds = setOf(uncategorizedId(), debit.categoryId),
+            limit = limit
+        )
+        val byId = dao.getCategories().associateBy { it.id }
+        val picked = ids.mapNotNull { byId[it] }
+        if (picked.size >= limit) return picked
+        val rest = byId.values.filter { it.name != "Uncategorized" && it.id != debit.categoryId && it !in picked }
+            .sortedBy { it.sortOrder }
+        return (picked + rest).take(limit)
+    }
+
+    /**
+     * The owner tagged this debit. That is the only thing that teaches tag memory.
+     * Location is stamped now if the payment had none and it happened recently.
+     */
     suspend fun categorizeDebit(
         debitId: Long,
         categoryId: Long,
         note: String? = null,
-        learnSender: Boolean = true
-    ) {
-        val debit = dao.getDebitById(debitId) ?: return
+        fix: TagMemory.Fix? = null
+    ): DebitEntity? {
+        val debit = dao.getDebitById(debitId) ?: return null
         val trimmedNote = note?.trim()?.ifBlank { null }
-        dao.updateDebit(
-            debit.copy(
-                categoryId = categoryId,
-                note = trimmedNote ?: debit.note,
-                autoCategorized = false
-            )
+        val category = dao.getCategoryById(categoryId)
+        val isFuel = Fuel.isFuelCategory(category?.name)
+        val price = debit.fuelPricePerL ?: Fuel.pricePerLitre(appContext)
+        val useFix = fix != null && debit.lat == null &&
+            System.currentTimeMillis() - debit.occurredAt <= RECENT_FOR_LOCATION_MS
+        val updated = debit.copy(
+            categoryId = categoryId,
+            note = trimmedNote ?: debit.note,
+            autoCategorized = false,
+            tagSource = if (categoryId == uncategorizedId()) TagMemory.SOURCE_NONE else TagMemory.SOURCE_MANUAL,
+            lat = if (useFix) fix!!.lat else debit.lat,
+            lng = if (useFix) fix!!.lng else debit.lng,
+            locAccuracyM = if (useFix) fix!!.accuracyM else debit.locAccuracyM,
+            litres = if (isFuel) Fuel.litres(debit.amountPaise, price) else null,
+            fuelPricePerL = if (isFuel) price else null,
+            tripKm = if (isFuel) debit.tripKm else null,
+            updatedAt = System.currentTimeMillis()
         )
-        if (learnSender) {
-            autoCategorizer.rememberSenderCategory(debit.sender, categoryId)
+        dao.updateDebit(updated)
+        FinanceCloudSync.push(appContext, debitId)
+        return updated
+    }
+
+    /** Trip meter reading typed at this refuel. Returns the refreshed fuel stats. */
+    suspend fun setTripKm(debitId: Long, km: Double): Fuel.Stats? {
+        val debit = dao.getDebitById(debitId) ?: return null
+        if (km <= 0.0 || km > 2_000.0) return null
+        dao.updateDebit(debit.copy(tripKm = km, updatedAt = System.currentTimeMillis()))
+        FinanceCloudSync.push(appContext, debitId)
+        return fuelStats()
+    }
+
+    suspend fun fuelStats(now: Long = System.currentTimeMillis()): Fuel.Stats? {
+        val fuelIds = dao.getCategories().filter { Fuel.isFuelCategory(it.name) }.map { it.id }
+        if (fuelIds.isEmpty()) return null
+        val fills = dao.debitsInCategories(fuelIds).map {
+            Fuel.Fill(it.occurredAt, it.amountPaise, it.litres, it.tripKm)
         }
+        if (fills.isEmpty()) return null
+        return Fuel.stats(fills, startOfMonth(now), startOfNextMonth(now))
     }
 
     suspend fun dontTrack(messageKey: String) {
         if (messageKey.isBlank()) return
         dao.insertIgnored(IgnoredSmsEntity(messageKey))
         dao.deleteDebitByMessageKey(messageKey)
+        FinanceCloudSync.markDeleted(messageKey)
     }
 
     suspend fun dontTrackByDebitId(debitId: Long) {
         val debit = dao.getDebitById(debitId) ?: return
         if (debit.isManualEntry()) {
             dao.deleteDebitById(debitId)
+            FinanceCloudSync.markDeleted(debit.messageKey)
             return
         }
         dontTrack(debit.messageKey)
@@ -130,10 +262,10 @@ class FinanceRepository(context: Context) {
         val snippet = cleanNote.ifBlank { "Manual entry" }
         val sender = payee.trim().ifBlank { "Cash" }
         val messageKey = "manual:${UUID.randomUUID()}"
-        val resolvedCategoryId = categoryId ?: run {
-            val match = autoCategorizer.resolveCategory(sender, snippet)
-            match.categoryId
-        }
+        val payee = manualPayee(sender)
+        val resolvedCategoryId = categoryId ?: uncategorizedId()
+        val isFuel = Fuel.isFuelCategory(dao.getCategoryById(resolvedCategoryId)?.name)
+        val price = if (isFuel) Fuel.pricePerLitre(appContext) else null
         val debit = DebitEntity(
             messageKey = messageKey,
             amountPaise = amountPaise,
@@ -141,11 +273,18 @@ class FinanceRepository(context: Context) {
             snippet = snippet,
             categoryId = resolvedCategoryId,
             occurredAt = occurredAt,
-            autoCategorized = categoryId == null,
-            note = cleanNote.ifBlank { null }
+            autoCategorized = false,
+            note = cleanNote.ifBlank { null },
+            payeeKey = payee?.key,
+            payeeName = payee?.name,
+            tagSource = if (categoryId == null) TagMemory.SOURCE_NONE else TagMemory.SOURCE_MANUAL,
+            litres = price?.let { Fuel.litres(amountPaise, it) },
+            fuelPricePerL = price
         )
         val rowId = dao.insertDebit(debit)
-        return if (rowId > 0L) rowId else dao.getDebitByMessageKey(messageKey)?.id
+        val id = if (rowId > 0L) rowId else dao.getDebitByMessageKey(messageKey)?.id
+        id?.let { FinanceCloudSync.push(appContext, it) }
+        return id
     }
 
     suspend fun updateManualDebit(
@@ -161,6 +300,9 @@ class FinanceRepository(context: Context) {
         val cleanNote = note.trim()
         val snippet = cleanNote.ifBlank { "Manual entry" }
         val sender = payee.trim().ifBlank { "Cash" }
+        val payee = manualPayee(sender)
+        val isFuel = Fuel.isFuelCategory(dao.getCategoryById(categoryId)?.name)
+        val price = debit.fuelPricePerL ?: Fuel.pricePerLitre(appContext)
         dao.updateDebit(
             debit.copy(
                 amountPaise = amountPaise,
@@ -169,9 +311,16 @@ class FinanceRepository(context: Context) {
                 categoryId = categoryId,
                 occurredAt = occurredAt,
                 autoCategorized = false,
-                note = cleanNote.ifBlank { null }
+                note = cleanNote.ifBlank { null },
+                payeeKey = payee?.key,
+                payeeName = payee?.name,
+                tagSource = if (categoryId == uncategorizedId()) TagMemory.SOURCE_NONE else TagMemory.SOURCE_MANUAL,
+                litres = if (isFuel) Fuel.litres(amountPaise, price) else null,
+                fuelPricePerL = if (isFuel) price else null,
+                updatedAt = System.currentTimeMillis()
             )
         )
+        FinanceCloudSync.push(appContext, debitId)
         return true
     }
 
@@ -179,7 +328,14 @@ class FinanceRepository(context: Context) {
         val debit = dao.getDebitById(debitId) ?: return false
         if (!debit.isManualEntry()) return false
         dao.deleteDebitById(debitId)
+        FinanceCloudSync.markDeleted(debit.messageKey)
         return true
+    }
+
+    private fun manualPayee(name: String): PayeeParser.Payee? {
+        val clean = name.trim()
+        if (clean.isBlank() || clean.equals("Cash", ignoreCase = true)) return null
+        return PayeeParser.Payee("N:" + PayeeParser.normaliseKey(clean), clean)
     }
 
     suspend fun addCategory(name: String, colorArgb: Int, parentCategoryId: Long? = null): Long {
@@ -199,6 +355,7 @@ class FinanceRepository(context: Context) {
     suspend fun setParentCategory(categoryId: Long, parentCategoryId: Long?) {
         if (categoryId == parentCategoryId) return
         dao.updateParentCategory(categoryId, parentCategoryId)
+        FinanceCloudSync.syncAllInBackground(appContext)
     }
 
     suspend fun deleteCategory(categoryId: Long) {
@@ -206,6 +363,8 @@ class FinanceRepository(context: Context) {
         dao.unlinkSubcategories(categoryId)
         dao.reassignDebits(categoryId, uncategorizedId)
         dao.deleteCategory(categoryId)
+        dao.untagCategory(uncategorizedId)
+        FinanceCloudSync.syncAllInBackground(appContext)
     }
 
     suspend fun getMoMHistory(
@@ -347,7 +506,8 @@ class FinanceRepository(context: Context) {
                     amountPaise = parsed.amountPaise,
                     sender = sender,
                     snippet = parsed.snippet,
-                    occurredAt = date
+                    occurredAt = date,
+                    body = body
                 )
                 if (inserted != null) ingested++
             }
@@ -381,6 +541,9 @@ class FinanceRepository(context: Context) {
     }
 
     companion object {
+        /** A tag made this long after paying still stamps where the phone is. */
+        const val RECENT_FOR_LOCATION_MS = 20 * 60 * 1000L
+
         @Volatile
         private var instance: FinanceRepository? = null
 

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.CategorizeOverlayActivity
 import com.example.formatRupees
 import com.example.ui.theme.AccentBlue
 import com.example.ui.theme.AccentGreen
@@ -146,6 +147,13 @@ fun FinanceScreen() {
     var isCategoryBreakdownExpanded by remember { mutableStateOf(false) }
     var momMonthsCount by remember { mutableStateOf(6) }
     var momHistory by remember { mutableStateOf<List<MonthTotalPoint>>(emptyList()) }
+    var fuelStats by remember { mutableStateOf<Fuel.Stats?>(null) }
+    var fuelPrice by remember { mutableStateOf(Fuel.pricePerLitre(context)) }
+    var showFuelPrice by remember { mutableStateOf(false) }
+
+    LaunchedEffect(debits, fuelPrice) {
+        fuelStats = withContext(Dispatchers.IO) { repo.fuelStats() }
+    }
 
     val categoryMap = categories.associateBy { it.id }
 
@@ -341,7 +349,7 @@ fun FinanceScreen() {
 
     val uncategorizedId = categories.find { it.name == "Uncategorized" }?.id
     val uncategorizedDebits = monthDebits.filter { it.categoryId == uncategorizedId }
-    val attentionDebits = uncategorizedDebits.take(8)
+    val attentionDebits = uncategorizedDebits
     val attentionIds = attentionDebits.map { it.id }.toSet()
     val recentDebits = monthDebits.filter { it.id !in attentionIds }
 
@@ -910,6 +918,12 @@ fun FinanceScreen() {
                     }
                 }
             } else {
+                fuelStats?.let { fs ->
+                    item {
+                        FuelCard(stats = fs, pricePerLitre = fuelPrice, onPriceTap = { showFuelPrice = true })
+                    }
+                }
+
                 if (uncategorizedShare > 0.5 && attentionDebits.isNotEmpty()) {
                     item {
                         Box(
@@ -920,7 +934,7 @@ fun FinanceScreen() {
                                 .padding(12.dp)
                         ) {
                             Text(
-                                text = "Most spending is uncategorized — tap a debit to assign a category.",
+                                text = "Most spending is untagged. Tap one to tag it; the same payee or spot is tagged for you next time.",
                                 color = TextPrimary.copy(alpha = 0.85f),
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp,
@@ -931,7 +945,7 @@ fun FinanceScreen() {
                 }
 
                 if (attentionDebits.isNotEmpty()) {
-                    item { SectionLabel("Needs attention") }
+                    item { SectionLabel("Untagged · ${attentionDebits.size}") }
                     items(attentionDebits, key = { it.id }) { debit ->
                         DebitRow(
                             debit = debit,
@@ -1062,6 +1076,45 @@ fun FinanceScreen() {
         }
     }
 
+    if (showFuelPrice) {
+        var priceText by remember { mutableStateOf(String.format(Locale.US, "%.2f", fuelPrice)) }
+        AlertDialog(
+            onDismissRequest = { showFuelPrice = false },
+            containerColor = DarkSurface,
+            title = { Text("Petrol price (₹/L)", color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 15.sp) },
+            text = {
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        cursorColor = AccentGreen,
+                        focusedBorderColor = AccentGreen,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    priceText.toDoubleOrNull()?.takeIf { it > 0 }?.let {
+                        Fuel.setPricePerLitre(context, it)
+                        fuelPrice = it
+                    }
+                    showFuelPrice = false
+                }) {
+                    Text("Save", color = AccentGreen, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFuelPrice = false }) {
+                    Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
+                }
+            }
+        )
+    }
+
     if (showAddDebit) {
         AddDebitSheet(
             categories = categories,
@@ -1119,145 +1172,17 @@ fun FinanceScreen() {
         )
     }
 
-    if (recategorizeDebit != null) {
-        val debitToRecat = recategorizeDebit!!
-        var recatNote by remember(debitToRecat.id) {
-            mutableStateOf(debitToRecat.note ?: "")
-        }
-        var recatCategoryId by remember(debitToRecat.id) {
-            mutableStateOf(debitToRecat.categoryId)
-        }
-        var recatNoteError by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { recategorizeDebit = null },
-            containerColor = DarkSurface,
-            title = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = formatRupees(debitToRecat.amountPaise),
-                        color = TextPrimary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = debitToRecat.sender,
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp
-                    )
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "NOTE * (REQUIRED)",
-                            color = if (recatNoteError && recatNote.isBlank()) AccentRed else TextSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        OutlinedTextField(
-                            value = recatNote,
-                            onValueChange = {
-                                recatNote = it
-                                if (it.isNotBlank()) recatNoteError = false
-                            },
-                            singleLine = true,
-                            isError = recatNoteError && recatNote.isBlank(),
-                            placeholder = {
-                                Text(
-                                    "e.g. Lunch, Grocery...",
-                                    color = TextSecondary.copy(alpha = 0.5f),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp
-                                )
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                cursorColor = AccentGreen,
-                                focusedBorderColor = AccentGreen,
-                                unfocusedBorderColor = BorderColor,
-                                errorBorderColor = AccentRed
-                            )
-                        )
-                    }
-
-                    Text(
-                        text = "CATEGORY",
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        categories.filter { it.name != "Uncategorized" }.forEach { category ->
-                            val isSelected = recatCategoryId == category.id
-                            val catColor = modernCategoryColor(category)
-                            Box(
-                                modifier = Modifier
-                                    .background(
-                                        if (isSelected) catColor.copy(alpha = 0.35f) else catColor.copy(alpha = 0.12f),
-                                        RoundedCornerShape(12.dp)
-                                    )
-                                    .border(
-                                        if (isSelected) 2.dp else 1.dp,
-                                        if (isSelected) catColor else catColor.copy(alpha = 0.4f),
-                                        RoundedCornerShape(12.dp)
-                                    )
-                                    .clickable {
-                                        recatCategoryId = category.id
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = if (isSelected) "✓ ${category.name}" else category.name,
-                                    color = if (isSelected) PureWhite else catColor,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val cleanNote = recatNote.trim()
-                        if (cleanNote.isBlank()) {
-                            recatNoteError = true
-                            Toast.makeText(context, "Note is mandatory", Toast.LENGTH_SHORT).show()
-                            return@TextButton
-                        }
-                        val catId = recatCategoryId ?: debitToRecat.categoryId
-                        scope.launch(Dispatchers.IO) {
-                            repo.categorizeDebit(debitToRecat.id, catId, note = cleanNote)
-                        }
-                        recategorizeDebit = null
-                        val catName = categories.find { it.id == catId }?.name ?: "Category"
-                        Toast.makeText(context, "Logged · $catName", Toast.LENGTH_SHORT).show()
-                    }
-                ) {
-                    Text("Save", color = AccentGreen, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { recategorizeDebit = null }) {
-                    Text("Cancel", color = TextSecondary, fontFamily = FontFamily.Monospace)
-                }
-            }
+    LaunchedEffect(recategorizeDebit) {
+        val debit = recategorizeDebit ?: return@LaunchedEffect
+        CategorizeOverlayActivity.start(
+            context = context,
+            debitId = debit.id,
+            amountPaise = debit.amountPaise,
+            sender = debit.sender,
+            snippet = debit.snippet,
+            notifId = -1
         )
+        recategorizeDebit = null
     }
 
     if (showManage) {
@@ -1877,6 +1802,51 @@ private fun CategoryChip(category: CategoryEntity, onClick: () -> Unit) {
 }
 
 @Composable
+private fun FuelCard(stats: Fuel.Stats, pricePerLitre: Double, onPriceTap: () -> Unit) {
+    val dateFormat = remember { SimpleDateFormat("dd MMM", Locale.US) }
+    FinanceCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionLabel("Bike")
+                Text(
+                    text = String.format(Locale.US, "₹%.2f/L", pricePerLitre),
+                    color = AccentBlue,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    modifier = Modifier.clickable { onPriceTap() }
+                )
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                FuelFigure("Mileage", stats.avgKmpl?.let { String.format(Locale.US, "%.1f km/L", it) } ?: "add trip km")
+                FuelFigure("Refuels every", stats.avgDaysBetweenFills?.let { String.format(Locale.US, "%.1f days", it) } ?: "–")
+                FuelFigure("This month", formatRupees(stats.monthSpendPaise))
+            }
+            stats.lastFillAt?.let {
+                Text(
+                    text = "Last fill ${dateFormat.format(Date(it))}" +
+                        (stats.lastKmpl?.let { k -> String.format(Locale.US, " · %.1f km/L", k) }.orEmpty()),
+                    color = TextSecondary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FuelFigure(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label.uppercase(), color = TextSecondary, fontFamily = FontFamily.Monospace, fontSize = 9.sp, letterSpacing = 0.8.sp)
+        Text(value, color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
 private fun DebitRow(
     debit: DebitEntity,
     categoryName: String,
@@ -1924,11 +1894,24 @@ private fun DebitRow(
             }
         }
         Text(
-            text = debit.sender,
+            text = debit.displayPayee(),
             color = TextSecondary,
             fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
+        if (debit.litres != null) {
+            Text(
+                text = String.format(
+                    Locale.US, "⛽ %.2f L%s", debit.litres,
+                    debit.tripKm?.let { String.format(Locale.US, " · trip %.0f km", it) }.orEmpty()
+                ),
+                color = TextSecondary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp
+            )
+        }
         val noteText = debit.note?.trim()
         val textToShow = if (!noteText.isNullOrBlank()) {
             noteText
@@ -1972,7 +1955,11 @@ private fun DebitRow(
                     }
                 } else if (showAutoBadge) {
                     Text(
-                        text = "auto",
+                        text = when (debit.tagSource) {
+                            TagMemory.SOURCE_PLACE -> "auto · spot"
+                            TagMemory.SOURCE_PAYEE -> "auto · payee"
+                            else -> "auto"
+                        },
                         color = AccentBlue.copy(alpha = 0.8f),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 10.sp

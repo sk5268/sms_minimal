@@ -52,6 +52,10 @@ interface FinanceDao {
     @Query("SELECT * FROM debits ORDER BY occurredAt DESC")
     fun observeDebits(): Flow<List<DebitEntity>>
 
+    /** Debits sitting in Uncategorized are untagged, whatever put them there. */
+    @Query("UPDATE debits SET tagSource = 'none', autoCategorized = 0 WHERE categoryId = :categoryId")
+    suspend fun untagCategory(categoryId: Long)
+
     @Query("SELECT * FROM debits WHERE categoryId = :categoryId ORDER BY occurredAt DESC")
     fun observeDebitsByCategory(categoryId: Long): Flow<List<DebitEntity>>
 
@@ -79,14 +83,39 @@ interface FinanceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertIgnored(ignored: IgnoredSmsEntity)
 
-    @Query("SELECT categoryId FROM sender_category_memory WHERE senderKey = :senderKey LIMIT 1")
-    suspend fun getSenderCategory(senderKey: String): Long?
+    @Query(
+        """
+        SELECT * FROM debits
+        WHERE tagSource = 'manual' AND payeeKey = :payeeKey
+        ORDER BY occurredAt DESC LIMIT :limit
+        """
+    )
+    suspend fun manualTagsForPayee(payeeKey: String, limit: Int = 10): List<DebitEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSenderMemory(memory: SenderCategoryMemoryEntity)
+    @Query(
+        """
+        SELECT * FROM debits
+        WHERE tagSource = 'manual' AND lat IS NOT NULL
+          AND lat BETWEEN :minLat AND :maxLat AND lng BETWEEN :minLng AND :maxLng
+        ORDER BY occurredAt DESC LIMIT 50
+        """
+    )
+    suspend fun manualTagsInBox(minLat: Double, maxLat: Double, minLng: Double, maxLng: Double): List<DebitEntity>
 
-    @Query("DELETE FROM sender_category_memory WHERE senderKey = :senderKey")
-    suspend fun deleteSenderMemory(senderKey: String)
+    @Query(
+        """
+        SELECT categoryId FROM debits
+        WHERE tagSource = 'manual' AND occurredAt >= :since
+        GROUP BY categoryId ORDER BY COUNT(*) DESC LIMIT :limit
+        """
+    )
+    suspend fun frequentCategoryIds(since: Long, limit: Int = 6): List<Long>
+
+    @Query("SELECT * FROM debits WHERE categoryId IN (:categoryIds) ORDER BY occurredAt ASC")
+    suspend fun debitsInCategories(categoryIds: List<Long>): List<DebitEntity>
+
+    @Query("SELECT * FROM debits ORDER BY occurredAt DESC")
+    suspend fun allDebits(): List<DebitEntity>
 
     @Query("SELECT * FROM keyword_rules")
     suspend fun getKeywordRules(): List<KeywordRuleEntity>

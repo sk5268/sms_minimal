@@ -342,6 +342,13 @@ object FirestoreSyncHelper {
             Log.e(TAG, "Error reconciling deleted messages in Firestore", e)
         }
 
+        // Tagged debits ride along so Jarvis's finance tables stay current.
+        try {
+            com.example.finance.FinanceCloudSync.syncAll(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing debits", e)
+        }
+
         withContext(Dispatchers.Main) {
             onComplete(count, lastError)
         }

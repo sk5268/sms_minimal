@@ -13,7 +13,9 @@ import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Telephony
 import androidx.core.app.NotificationCompat
+import com.example.finance.DebitNotifier
 import com.example.finance.FinanceRepository
+import com.example.finance.LocationCapture
 import kotlinx.coroutines.runBlocking
 
 class SmsReceiver : BroadcastReceiver() {
@@ -211,17 +213,21 @@ class SmsReceiver : BroadcastReceiver() {
 
 
 
-        var debitId: Long? = null
-        var debitAmountPaise: Long? = null
+        var debit: FinanceRepository.IngestResult? = null
         val parsedDebit = DebitParser.parse(body, sender)
         if (parsedDebit != null) {
-            debitAmountPaise = parsedDebit.amountPaise
-            debitId = runBlocking {
+            debit = runBlocking {
+                // Where the phone is right now is where the payment happened.
+                val fix = if (LocationCapture.hasBackgroundPermission(context)) {
+                    LocationCapture.currentFix(context, timeoutMs = 4_000L)
+                } else null
                 FinanceRepository.getInstance(context).ingestDebit(
                     amountPaise = parsedDebit.amountPaise,
                     sender = sender,
                     snippet = parsedDebit.snippet,
-                    occurredAt = timestamp
+                    occurredAt = timestamp,
+                    body = body,
+                    fix = fix
                 )
             }
         }
@@ -237,8 +243,8 @@ class SmsReceiver : BroadcastReceiver() {
             smsUriString = insertedUri?.toString().orEmpty(),
             threadId = threadId,
             messageId = messageId,
-            debitId = debitId,
-            debitAmountPaise = debitAmountPaise,
+            debit = debit,
+            debitAmountPaise = parsedDebit?.amountPaise,
             debitSnippet = parsedDebit?.snippet,
             debitOccurredAt = timestamp
         )
@@ -350,7 +356,7 @@ class SmsReceiver : BroadcastReceiver() {
         smsUriString: String,
         threadId: Long,
         messageId: Long?,
-        debitId: Long?,
+        debit: FinanceRepository.IngestResult?,
         debitAmountPaise: Long?,
         debitSnippet: String?,
         debitOccurredAt: Long
@@ -443,50 +449,22 @@ class SmsReceiver : BroadcastReceiver() {
             )
         }
 
-        if (debitId != null && debitAmountPaise != null && !debitSnippet.isNullOrBlank()) {
-            val categorizeIntent = Intent(context, CategorizeOverlayActivity::class.java).apply {
-                putExtra(CategorizeOverlayActivity.EXTRA_DEBIT_ID, debitId)
-                putExtra(CategorizeOverlayActivity.EXTRA_AMOUNT_PAISE, debitAmountPaise)
-                putExtra(CategorizeOverlayActivity.EXTRA_SENDER, sender)
-                putExtra(CategorizeOverlayActivity.EXTRA_SNIPPET, debitSnippet)
-                putExtra(CategorizeOverlayActivity.EXTRA_NOTIF_ID, notifId)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-            val categorizePendingIntent = PendingIntent.getActivity(
-                context,
-                notifId + 4,
-                categorizeIntent,
-                actionFlags
-            )
-            builder.addAction(
-                0,
-                "Categorize",
-                categorizePendingIntent
-            )
-
-            val dontTrackIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-                action = NotificationActionReceiver.ACTION_DONT_TRACK
-                putExtra(
-                    NotificationActionReceiver.EXTRA_MESSAGE_KEY,
-                    SmsIdentity.key(debitOccurredAt, sender, debitSnippet)
-                )
-                putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
-                putExtra(NotificationActionReceiver.EXTRA_SENDER, sender)
-            }
-            val dontTrackPendingIntent = PendingIntent.getBroadcast(
-                context,
-                notifId + 5,
-                dontTrackIntent,
-                actionFlags
-            )
-            builder.addAction(
-                0,
-                "Don't Track",
-                dontTrackPendingIntent
+        var actionCount = if (!otp.isNullOrEmpty()) 1 else 0
+        if (debit != null && debitAmountPaise != null && !debitSnippet.isNullOrBlank()) {
+            actionCount += DebitNotifier.addActions(
+                context = context,
+                builder = builder,
+                result = debit,
+                amountPaise = debitAmountPaise,
+                sender = sender,
+                snippet = debitSnippet,
+                messageKey = SmsIdentity.key(debitOccurredAt, sender, debitSnippet),
+                notifId = notifId
             )
         }
 
-        if (smsUriString.isNotEmpty() || (messageId != null && messageId > 0L)) {
+        // Android shows three actions at most.
+        if (actionCount < 3 && (smsUriString.isNotEmpty() || (messageId != null && messageId > 0L))) {
             val deleteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_DELETE_SMS
                 putExtra(NotificationActionReceiver.EXTRA_SMS_URI, smsUriString)

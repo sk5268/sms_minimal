@@ -3,6 +3,16 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions as KbOptions
+import androidx.compose.ui.text.input.KeyboardType
+import com.example.finance.DebitEntity
+import com.example.finance.Fuel
+import com.example.finance.LocationCapture
+import com.example.finance.TagMemory
+import com.example.finance.displayPayee
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -74,7 +84,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Full-screen translucent sheet launched from notification actions.
+ * Bottom sheet for tagging one debit, launched from the notification ("More…",
+ * "Change") and from the Finance screen. One tap on a category saves it; the note is
+ * optional. Fuel asks for the trip reading before saving.
  * Runs as an Activity so Compose has a lifecycle and no overlay permission is required.
  */
 class CategorizeOverlayActivity : ComponentActivity() {
@@ -148,83 +160,83 @@ fun CategorizeOverlayContent(
     val scope = rememberCoroutineScope()
     val repo = remember { FinanceRepository.getInstance(context) }
 
-    var resolvedAmount by remember { mutableStateOf(amountPaise) }
-    var resolvedSender by remember { mutableStateOf(sender) }
-    var resolvedSnippet by remember { mutableStateOf(snippet) }
-
+    var debit by remember { mutableStateOf<DebitEntity?>(null) }
     var categories by remember { mutableStateOf<List<CategoryEntity>>(emptyList()) }
-    var selectedCategoryId by remember { mutableStateOf<Long?>(null) }
+    var suggestions by remember { mutableStateOf<List<CategoryEntity>>(emptyList()) }
     var note by remember { mutableStateOf("") }
-    var showNoteError by remember { mutableStateOf(false) }
-    var showCategoryError by remember { mutableStateOf(false) }
+    var pendingFuelCategory by remember { mutableStateOf<CategoryEntity?>(null) }
+    var tripKm by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
 
     var isAddingCategory by remember { mutableStateOf(false) }
     var newCategoryName by remember { mutableStateOf("") }
     var selectedColorArgb by remember { mutableIntStateOf(0) }
-
-    val noteFocusRequester = remember { FocusRequester() }
     val newCategoryFocusRequester = remember { FocusRequester() }
+    val tripFocusRequester = remember { FocusRequester() }
     val scrollState = rememberScrollState()
 
-    LaunchedEffect(debitId) {
-        val allCats = withContext(Dispatchers.IO) { repo.getCategories() }
-        categories = allCats
-
-        val existingDebit = withContext(Dispatchers.IO) { repo.getDebitById(debitId) }
-        if (existingDebit != null) {
-            if (resolvedAmount <= 0L) resolvedAmount = existingDebit.amountPaise
-            if (resolvedSender.isBlank()) resolvedSender = existingDebit.sender
-            if (resolvedSnippet.isBlank()) resolvedSnippet = existingDebit.snippet
-
-            val uncategorized = allCats.find { it.name.equals("Uncategorized", ignoreCase = true) }
-            if (existingDebit.categoryId != uncategorized?.id) {
-                selectedCategoryId = existingDebit.categoryId
-            }
-            if (!existingDebit.note.isNullOrBlank()) {
-                note = existingDebit.note
-            }
+    var hasLocation by remember { mutableStateOf(LocationCapture.hasForegroundPermission(context)) }
+    var hasBackgroundLocation by remember { mutableStateOf(LocationCapture.hasBackgroundPermission(context)) }
+    val backgroundLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasBackgroundLocation = granted
+    }
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        hasLocation = result[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        if (hasLocation && !hasBackgroundLocation) {
+            // Android 11+ sends this one to Settings ("Allow all the time"), which lets
+            // the SMS receiver stamp the spot the moment a payment lands.
+            backgroundLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         }
-        try {
-            noteFocusRequester.requestFocus()
-        } catch (_: Exception) { }
     }
 
-    fun cancelNotificationIfNeeded() {
-        if (resolvedSender.isNotEmpty()) {
-            SmsReceiver.clearSenderMessages(context, resolvedSender)
+    LaunchedEffect(debitId) {
+        val loaded = withContext(Dispatchers.IO) { repo.getDebitById(debitId) }
+        debit = loaded
+        categories = withContext(Dispatchers.IO) { repo.getCategories() }
+        if (loaded != null) {
+            note = loaded.note.orEmpty()
+            tripKm = loaded.tripKm?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() }.orEmpty()
+            suggestions = withContext(Dispatchers.IO) { repo.suggestionsFor(loaded, limit = 4) }
         }
+    }
+
+    val shownAmount = debit?.amountPaise?.takeIf { it > 0 } ?: amountPaise
+    val payeeLine = debit?.displayPayee() ?: sender
+    val currentCategoryId = debit?.takeIf { it.tagSource != TagMemory.SOURCE_NONE }?.categoryId
+
+    fun cancelNotificationIfNeeded() {
+        if (sender.isNotEmpty()) SmsReceiver.clearSenderMessages(context, sender)
         if (notifId != -1) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             nm.cancel(notifId)
         }
     }
 
-    fun performSave() {
-        val cleanNote = note.trim()
-        if (cleanNote.isBlank()) {
-            showNoteError = true
-            try { noteFocusRequester.requestFocus() } catch (_: Exception) { }
-            Toast.makeText(context, "Note is mandatory", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val catId = selectedCategoryId
-        if (catId == null) {
-            showCategoryError = true
-            Toast.makeText(context, "Please select a category", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val catName = categories.find { it.id == catId }?.name ?: "Category"
+    fun save(category: CategoryEntity, trip: Double?) {
+        if (saving) return
+        saving = true
         scope.launch(Dispatchers.IO) {
-            repo.categorizeDebit(debitId, catId, note = cleanNote)
+            val fix = if (hasLocation && debit?.lat == null) LocationCapture.currentFix(context, 3_000L) else null
+            repo.categorizeDebit(debitId, category.id, note = note, fix = fix)
+            val stats = if (trip != null) repo.setTripKm(debitId, trip) else null
+            withContext(Dispatchers.Main) {
+                cancelNotificationIfNeeded()
+                val extra = stats?.lastKmpl?.let { String.format(java.util.Locale.US, " · %.1f km/L", it) }.orEmpty()
+                Toast.makeText(context, "Logged · ${category.name}$extra", Toast.LENGTH_SHORT).show()
+                onDismiss()
+            }
         }
-        cancelNotificationIfNeeded()
-        Toast.makeText(context, "Logged · $catName", Toast.LENGTH_SHORT).show()
-        onDismiss()
     }
 
-    fun createCategoryAndSelect() {
+    fun onCategoryTap(category: CategoryEntity) {
+        if (Fuel.isFuelCategory(category.name)) {
+            pendingFuelCategory = category
+        } else {
+            save(category, null)
+        }
+    }
+
+    fun createCategoryAndSave() {
         val name = newCategoryName.trim()
         if (name.isBlank()) {
             Toast.makeText(context, "Enter a category name", Toast.LENGTH_SHORT).show()
@@ -233,14 +245,11 @@ fun CategorizeOverlayContent(
         scope.launch(Dispatchers.IO) {
             val color = if (selectedColorArgb != 0) selectedColorArgb else pickNextCategoryColor(categories)
             val newCatId = repo.addCategory(name, color)
-            val refreshed = repo.getCategories()
+            val created = repo.getCategories().find { it.id == newCatId }
             withContext(Dispatchers.Main) {
-                categories = refreshed
-                selectedCategoryId = newCatId
                 isAddingCategory = false
                 newCategoryName = ""
-                showCategoryError = false
-                Toast.makeText(context, "Category \"$name\" created", Toast.LENGTH_SHORT).show()
+                created?.let { onCategoryTap(it) }
             }
         }
     }
@@ -258,7 +267,7 @@ fun CategorizeOverlayContent(
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
+                    .padding(16.dp)
                     .clickable(enabled = false) { },
                 color = Color(0xFF161821),
                 shape = RoundedCornerShape(24.dp),
@@ -270,19 +279,28 @@ fun CategorizeOverlayContent(
                         .verticalScroll(scrollState),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Header: Amount & Close Button
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = formatRupees(resolvedAmount),
-                            color = PureWhite,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 28.sp
-                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = formatRupees(shownAmount),
+                                color = PureWhite,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 28.sp
+                            )
+                            Text(
+                                text = payeeLine,
+                                color = TextSecondary,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Box(
                             modifier = Modifier
                                 .size(32.dp)
@@ -290,185 +308,52 @@ fun CategorizeOverlayContent(
                                 .clickable { onDismiss() },
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "✕",
-                                color = TextSecondary,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text(text = "✕", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
-                    // Sender & SMS message snippet
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (resolvedSender.isNotBlank()) {
-                            Text(
-                                text = resolvedSender.uppercase(),
-                                color = TextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                letterSpacing = 1.sp
-                            )
-                        }
-                        if (resolvedSnippet.isNotBlank()) {
-                            Text(
-                                text = resolvedSnippet,
-                                color = TextPrimary.copy(alpha = 0.75f),
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    // Mandatory Note Section
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "NOTE * (REQUIRED)",
-                                color = if (showNoteError && note.isBlank()) AccentRed else TextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp
-                            )
-                            if (showNoteError && note.isBlank()) {
-                                Text(
-                                    text = "Mandatory",
-                                    color = AccentRed,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-
-                        OutlinedTextField(
-                            value = note,
-                            onValueChange = {
-                                note = it
-                                if (it.isNotBlank()) showNoteError = false
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(noteFocusRequester),
-                            placeholder = {
-                                Text(
-                                    text = "What was this for? (e.g. Lunch, Uber, Groceries)",
-                                    color = TextSecondary.copy(alpha = 0.5f),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp
-                                )
-                            },
-                            singleLine = true,
-                            isError = showNoteError && note.isBlank(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                cursorColor = AccentGreen,
-                                focusedBorderColor = AccentGreen,
-                                unfocusedBorderColor = Color(0xFF2E3346),
-                                errorBorderColor = AccentRed,
-                                errorCursorColor = AccentRed,
-                                focusedContainerColor = Color(0xFF0F1118),
-                                unfocusedContainerColor = Color(0xFF0F1118),
-                                errorContainerColor = Color(0xFF0F1118)
-                            ),
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Sentences,
-                                imeAction = ImeAction.Done
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onDone = {
-                                    performSave()
-                                }
-                            )
+                    val fuelCategory = pendingFuelCategory
+                    if (fuelCategory != null) {
+                        FuelStep(
+                            amountPaise = shownAmount,
+                            pricePerLitre = debit?.fuelPricePerL ?: Fuel.pricePerLitre(context),
+                            tripKm = tripKm,
+                            onTripKmChange = { tripKm = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                            focusRequester = tripFocusRequester,
+                            onSave = { save(fuelCategory, tripKm.toDoubleOrNull()) },
+                            onSkip = { save(fuelCategory, null) }
                         )
-                    }
-
-                    // Category Section
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "CATEGORY * (REQUIRED)",
-                                color = if (showCategoryError && selectedCategoryId == null) AccentRed else TextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp
-                            )
-                            if (showCategoryError && selectedCategoryId == null) {
-                                Text(
-                                    text = "Please select a category",
-                                    color = AccentRed,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                        LaunchedEffect(fuelCategory.id) {
+                            try { tripFocusRequester.requestFocus() } catch (_: Exception) { }
+                        }
+                    } else {
+                        if (suggestions.isNotEmpty()) {
+                            SheetLabel("SUGGESTED")
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                suggestions.forEach { category ->
+                                    CategoryPill(category, selected = false, large = true) { onCategoryTap(category) }
+                                }
                             }
                         }
 
+                        SheetLabel("ALL CATEGORIES")
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val displayCategories = categories.filter { it.name != "Uncategorized" }
-                            displayCategories.forEach { category ->
-                                val isSelected = selectedCategoryId == category.id
-                                val catColor = modernCategoryColor(category)
-                                val chipBg = if (isSelected) catColor.copy(alpha = 0.35f) else catColor.copy(alpha = 0.12f)
-                                val chipBorder = if (isSelected) catColor else catColor.copy(alpha = 0.4f)
-                                val borderWidth = if (isSelected) 2.dp else 1.dp
-
-                                Box(
-                                    modifier = Modifier
-                                        .background(chipBg, RoundedCornerShape(16.dp))
-                                        .border(borderWidth, chipBorder, RoundedCornerShape(16.dp))
-                                        .clickable {
-                                            selectedCategoryId = category.id
-                                            showCategoryError = false
-                                            if (note.isBlank()) {
-                                                showNoteError = true
-                                                try { noteFocusRequester.requestFocus() } catch (_: Exception) { }
-                                            }
-                                        }
-                                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        text = if (isSelected) "✓ ${category.name.uppercase()}" else category.name.uppercase(),
-                                        color = if (isSelected) PureWhite else catColor,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        letterSpacing = 0.8.sp
-                                    )
+                            val suggestedIds = suggestions.map { it.id }.toSet()
+                            categories.filter { it.name != "Uncategorized" && it.id !in suggestedIds }.forEach { category ->
+                                CategoryPill(category, selected = category.id == currentCategoryId, large = false) {
+                                    onCategoryTap(category)
                                 }
                             }
-
-                            // "+ NEW CATEGORY" button right inline
-                            val isNewCatOpen = isAddingCategory
                             Box(
                                 modifier = Modifier
-                                    .background(
-                                        if (isNewCatOpen) AccentGreen.copy(alpha = 0.25f) else Color(0xFF1E2230),
-                                        RoundedCornerShape(16.dp)
-                                    )
-                                    .border(
-                                        1.dp,
-                                        if (isNewCatOpen) AccentGreen else AccentGreen.copy(alpha = 0.5f),
-                                        RoundedCornerShape(16.dp)
-                                    )
+                                    .background(Color(0xFF1E2230), RoundedCornerShape(16.dp))
+                                    .border(1.dp, AccentGreen.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
                                     .clickable {
                                         isAddingCategory = !isAddingCategory
                                         if (isAddingCategory) {
@@ -479,7 +364,7 @@ fun CategorizeOverlayContent(
                                     .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    text = if (isNewCatOpen) "✕ CANCEL" else "+ NEW",
+                                    text = if (isAddingCategory) "✕ CANCEL" else "+ NEW",
                                     color = AccentGreen,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 10.sp,
@@ -489,181 +374,259 @@ fun CategorizeOverlayContent(
                             }
                         }
 
-                        // Inline Category Creator
                         if (isAddingCategory) {
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp),
-                                color = Color(0xFF1B1E2B),
-                                shape = RoundedCornerShape(14.dp),
-                                border = BorderStroke(1.dp, Color(0xFF2E3346))
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text(
-                                        text = "ADD NEW CATEGORY",
-                                        color = AccentGreen,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    )
-
-                                    OutlinedTextField(
-                                        value = newCategoryName,
-                                        onValueChange = { newCategoryName = it },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .focusRequester(newCategoryFocusRequester),
-                                        placeholder = {
-                                            Text(
-                                                "Category name (e.g. Shopping, Subscriptions)",
-                                                color = TextSecondary.copy(alpha = 0.5f),
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 12.sp
-                                            )
-                                        },
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(10.dp),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedTextColor = TextPrimary,
-                                            unfocusedTextColor = TextPrimary,
-                                            cursorColor = AccentGreen,
-                                            focusedBorderColor = AccentGreen,
-                                            unfocusedBorderColor = Color(0xFF2E3346),
-                                            focusedContainerColor = Color(0xFF10121A),
-                                            unfocusedContainerColor = Color(0xFF10121A)
-                                        ),
-                                        keyboardOptions = KeyboardOptions(
-                                            capitalization = KeyboardCapitalization.Words,
-                                            imeAction = ImeAction.Done
-                                        ),
-                                        keyboardActions = KeyboardActions(
-                                            onDone = { createCategoryAndSelect() }
-                                        )
-                                    )
-
-                                    LaunchedEffect(isAddingCategory) {
-                                        if (isAddingCategory) {
-                                            try { newCategoryFocusRequester.requestFocus() } catch (_: Exception) { }
-                                        }
-                                    }
-
-                                    // Color selector palette
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            CategoryChartPalette.take(6).forEach { color ->
-                                                val isColorSelected = color.toArgb() == selectedColorArgb
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(20.dp)
-                                                        .background(color, CircleShape)
-                                                        .border(
-                                                            if (isColorSelected) 2.dp else 0.dp,
-                                                            PureWhite,
-                                                            CircleShape
-                                                        )
-                                                        .clickable {
-                                                            selectedColorArgb = color.toArgb()
-                                                        }
-                                                )
-                                            }
-                                        }
-
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Text(
-                                                text = "Cancel",
-                                                color = TextSecondary,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 11.sp,
-                                                modifier = Modifier
-                                                    .clickable { isAddingCategory = false }
-                                                    .padding(vertical = 4.dp, horizontal = 4.dp)
-                                            )
-                                            Text(
-                                                text = "Add & Select",
-                                                color = AccentGreen,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 11.sp,
-                                                modifier = Modifier
-                                                    .background(AccentGreen.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
-                                                    .border(1.dp, AccentGreen.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                                    .clickable { createCategoryAndSelect() }
-                                                    .padding(vertical = 4.dp, horizontal = 10.dp)
-                                            )
-                                        }
-                                    }
-                                }
+                            NewCategoryRow(
+                                name = newCategoryName,
+                                onNameChange = { newCategoryName = it },
+                                selectedColorArgb = selectedColorArgb,
+                                onColorPick = { selectedColorArgb = it },
+                                focusRequester = newCategoryFocusRequester,
+                                onDone = { createCategoryAndSave() }
+                            )
+                            LaunchedEffect(Unit) {
+                                try { newCategoryFocusRequester.requestFocus() } catch (_: Exception) { }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    // Primary Action: Log Debit
-                    val isFormValid = note.isNotBlank() && selectedCategoryId != null
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (isFormValid) AccentGreen else Color(0xFF222533),
-                                RoundedCornerShape(14.dp)
+                        OutlinedTextField(
+                            value = note,
+                            onValueChange = { note = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = {
+                                Text(
+                                    text = "Note (optional)",
+                                    color = TextSecondary.copy(alpha = 0.5f),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = sheetFieldColors(),
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Done
                             )
-                            .clickable {
-                                performSave()
-                            }
-                            .padding(vertical = 13.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "LOG DEBIT",
-                            color = if (isFormValid) OLEDBlack else TextSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
                         )
                     }
 
-                    // Don't track action
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(OLEDBlack, RoundedCornerShape(14.dp))
-                            .border(1.dp, AccentRed.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                            .clickable {
-                                scope.launch(Dispatchers.IO) {
-                                    repo.dontTrackByDebitId(debitId)
-                                }
-                                cancelNotificationIfNeeded()
-                                Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
-                                onDismiss()
-                            }
-                            .padding(vertical = 11.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    if (!hasLocation || !hasBackgroundLocation) {
                         Text(
-                            text = "DON'T TRACK",
-                            color = AccentRed,
+                            text = if (!hasLocation) "📍 Remember places: tag a spot once, it's tagged next time · Allow"
+                            else "📍 Allow location \"all the time\" so payments are stamped as they arrive",
+                            color = AccentGreen.copy(alpha = 0.85f),
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
+                            fontSize = 11.sp,
+                            modifier = Modifier.clickable {
+                                if (!hasLocation) {
+                                    locationLauncher.launch(
+                                        arrayOf(
+                                            Manifest.permission.ACCESS_FINE_LOCATION,
+                                            Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
+                                } else {
+                                    backgroundLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                                }
+                            }
                         )
                     }
+
+                    Text(
+                        text = "Don't track this payment",
+                        color = AccentRed.copy(alpha = 0.8f),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable {
+                            scope.launch(Dispatchers.IO) { repo.dontTrackByDebitId(debitId) }
+                            cancelNotificationIfNeeded()
+                            Toast.makeText(context, "Removed from finance", Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        }
+                    )
                 }
             }
         }
     }
 }
+
+@Composable
+private fun SheetLabel(text: String) {
+    Text(
+        text = text,
+        color = TextSecondary,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.8.sp
+    )
+}
+
+@Composable
+private fun CategoryPill(category: CategoryEntity, selected: Boolean, large: Boolean, onClick: () -> Unit) {
+    val catColor = modernCategoryColor(category)
+    Box(
+        modifier = Modifier
+            .background(catColor.copy(alpha = if (selected) 0.35f else 0.14f), RoundedCornerShape(16.dp))
+            .border(if (selected) 2.dp else 1.dp, if (selected) catColor else catColor.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .padding(horizontal = if (large) 18.dp else 14.dp, vertical = if (large) 12.dp else 8.dp)
+    ) {
+        Text(
+            text = if (selected) "✓ ${category.name.uppercase()}" else category.name.uppercase(),
+            color = if (selected) PureWhite else catColor,
+            fontFamily = FontFamily.Monospace,
+            fontSize = if (large) 12.sp else 10.sp,
+            fontWeight = if (large || selected) FontWeight.Bold else FontWeight.Medium,
+            letterSpacing = 0.8.sp
+        )
+    }
+}
+
+@Composable
+private fun FuelStep(
+    amountPaise: Long,
+    pricePerLitre: Double,
+    tripKm: String,
+    onTripKmChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    onSave: () -> Unit,
+    onSkip: () -> Unit
+) {
+    val litres = Fuel.litres(amountPaise, pricePerLitre)
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = String.format(java.util.Locale.US, "⛽ FUEL · %.2f L at ₹%.2f/L", litres, pricePerLitre),
+            color = TextPrimary,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        OutlinedTextField(
+            value = tripKm,
+            onValueChange = onTripKmChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester),
+            placeholder = {
+                Text(
+                    "Trip km since last fill",
+                    color = TextSecondary.copy(alpha = 0.5f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp
+                )
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = sheetFieldColors(),
+            keyboardOptions = KbOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onSave() })
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(AccentGreen, RoundedCornerShape(14.dp))
+                    .clickable { onSave() }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("SAVE", color = OLEDBlack, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(
+                text = "Skip",
+                color = TextSecondary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clickable { onSkip() }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+        }
+        Text(
+            text = "Reset the trip meter after filling.",
+            color = TextSecondary.copy(alpha = 0.7f),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+private fun NewCategoryRow(
+    name: String,
+    onNameChange: (String) -> Unit,
+    selectedColorArgb: Int,
+    onColorPick: (Int) -> Unit,
+    focusRequester: FocusRequester,
+    onDone: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFF1B1E2B),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFF2E3346))
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
+                placeholder = {
+                    Text(
+                        "New category (e.g. Pani Puri)",
+                        color = TextSecondary.copy(alpha = 0.5f),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                colors = sheetFieldColors(),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onDone() })
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CategoryChartPalette.take(6).forEach { color ->
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .background(color, CircleShape)
+                                .border(if (color.toArgb() == selectedColorArgb) 2.dp else 0.dp, PureWhite, CircleShape)
+                                .clickable { onColorPick(color.toArgb()) }
+                        )
+                    }
+                }
+                Text(
+                    text = "Add & tag",
+                    color = AccentGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .background(AccentGreen.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                        .clickable { onDone() }
+                        .padding(vertical = 4.dp, horizontal = 10.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun sheetFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = TextPrimary,
+    unfocusedTextColor = TextPrimary,
+    cursorColor = AccentGreen,
+    focusedBorderColor = AccentGreen,
+    unfocusedBorderColor = Color(0xFF2E3346),
+    focusedContainerColor = Color(0xFF0F1118),
+    unfocusedContainerColor = Color(0xFF0F1118)
+)
